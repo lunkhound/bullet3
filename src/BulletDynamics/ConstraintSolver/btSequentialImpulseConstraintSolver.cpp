@@ -716,40 +716,36 @@ btSolverConstraint&	btSequentialImpulseConstraintSolver::addRollingFrictionConst
 
 int	btSequentialImpulseConstraintSolver::getOrInitSolverBody(btCollisionObject& body,btScalar timeStep)
 {
-
-	int solverBodyIdA = -1;
-
-	if (body.getCompanionId() >= 0)
-	{
-		//body has already been converted
-		solverBodyIdA = body.getCompanionId();
-        btAssert(solverBodyIdA < m_tmpSolverBodyPool.size());
-	} else
-	{
-		btRigidBody* rb = btRigidBody::upcast(&body);
-		//convert both active and kinematic objects (for their velocity)
-		if (rb && (rb->getInvMass() || rb->isKinematicObject()))
-		{
-			solverBodyIdA = m_tmpSolverBodyPool.size();
-			btSolverBody& solverBody = m_tmpSolverBodyPool.expand();
-			initSolverBody(&solverBody,&body,timeStep);
-			body.setCompanionId(solverBodyIdA);
-		} else
-		{
-
-			if (m_fixedBodyId<0)
-			{
-				m_fixedBodyId = m_tmpSolverBodyPool.size();
-				btSolverBody& fixedBody = m_tmpSolverBodyPool.expand();
-				initSolverBody(&fixedBody,0,timeStep);
-			}
-			return m_fixedBodyId;
-//			return 0;//assume first one is a fixed solver body
-		}
-	}
-
-	return solverBodyIdA;
-
+    int uniqueId = body.getUniqueId();
+    btAssert( uniqueId < m_bodyUniqueIdToSolverBodyTable.size() );
+    int solverBodyId = m_bodyUniqueIdToSolverBodyTable[ uniqueId ];
+    // if no table entry yet,
+    if ( solverBodyId == -1 )
+    {
+        // create a table entry for this body
+        btRigidBody* rb = btRigidBody::upcast( &body );
+        //convert both active and kinematic objects (for their velocity)
+        if ( rb && ( rb->getInvMass() || rb->isKinematicObject() ) )
+        {
+            solverBodyId = m_tmpSolverBodyPool.size();
+            btSolverBody& solverBody = m_tmpSolverBodyPool.expand();
+            initSolverBody( &solverBody, &body, timeStep );
+        }
+        else
+        {
+            // all fixed bodies (inf mass) get mapped to a single solver id
+            if ( m_fixedBodyId<0 )
+            {
+                m_fixedBodyId = m_tmpSolverBodyPool.size();
+                btSolverBody& fixedBody = m_tmpSolverBodyPool.expand();
+                initSolverBody( &fixedBody, 0, timeStep );
+            }
+            solverBodyId = m_fixedBodyId;
+        }
+        m_bodyUniqueIdToSolverBodyTable[ uniqueId ] = solverBodyId;
+    }
+    btAssert( solverBodyId < m_tmpSolverBodyPool.size() );
+	return solverBodyId;
 }
 #include <stdio.h>
 
@@ -1245,11 +1241,17 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlySetup(btCol
 #endif //BT_ADDITIONAL_DEBUG
 
 
+    int maxUniqueId = 0;
 	for (int i = 0; i < numBodies; i++)
 	{
-		bodies[i]->setCompanionId(-1);
+        maxUniqueId = btMax( maxUniqueId, bodies[ i ]->getUniqueId() );
 	}
-
+    // prepare uniqueId to solverBodyId table
+    m_bodyUniqueIdToSolverBodyTable.resize( maxUniqueId + 1 );
+    for ( int i = 0; i < m_bodyUniqueIdToSolverBodyTable.size(); i++ )
+    {
+        m_bodyUniqueIdToSolverBodyTable[ i ] = -1;
+    }
 
 	m_tmpSolverBodyPool.reserve(numBodies+1);
 	m_tmpSolverBodyPool.resize(0);
@@ -1891,8 +1893,6 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCo
 
 			if (infoGlobal.m_splitImpulse)
 				m_tmpSolverBodyPool[i].m_originalBody->setWorldTransform(m_tmpSolverBodyPool[i].m_worldTransform);
-
-			m_tmpSolverBodyPool[i].m_originalBody->setCompanionId(-1);
 		}
 	}
 

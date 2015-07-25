@@ -144,6 +144,7 @@ void   btSimulationIslandManager::storeIslandActivationState(btCollisionWorld* c
 				collisionObject->setIslandTag(-1);
 				collisionObject->setCompanionId(-2);
 			}
+            collisionObject->setUniqueId( i );
 		}
 	}
 }
@@ -195,7 +196,8 @@ void	btSimulationIslandManager::storeIslandActivationState(btCollisionWorld* col
 				collisionObject->setIslandTag(-1);
 				collisionObject->setCompanionId(-2);
 			}
-			index++;
+            collisionObject->setUniqueId( i );
+            index++;
 		}
 	}
 }

@@ -43,7 +43,8 @@ protected:
 	btAlignedObjectArray<int>	m_orderNonContactConstraintPool;
 	btAlignedObjectArray<int>	m_orderFrictionConstraintPool;
 	btAlignedObjectArray<btTypedConstraint::btConstraintInfo1> m_tmpConstraintSizesPool;
-	int							m_maxOverrideNumSolverIterations;
+    btAlignedObjectArray<int>	m_bodyUniqueIdToSolverBodyTable;
+    int							m_maxOverrideNumSolverIterations;
 	int m_fixedBodyId;
 
 	btSingleConstraintRowSolver m_resolveSingleConstraintRowGeneric;
