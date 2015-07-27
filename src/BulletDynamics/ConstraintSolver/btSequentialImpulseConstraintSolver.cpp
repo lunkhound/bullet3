@@ -1240,12 +1240,19 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlySetup(btCol
     }
 #endif //BT_ADDITIONAL_DEBUG
 
-
     int maxUniqueId = 0;
-	for (int i = 0; i < numBodies; i++)
-	{
-        maxUniqueId = btMax( maxUniqueId, bodies[ i ]->getUniqueId() );
-	}
+	
+    for (int i = 0; i < numBodies; ++i)
+        maxUniqueId = btMax(maxUniqueId, bodies[i]->getUniqueId());
+	
+    for (int i = 0; i < numManifolds; ++i)
+    {
+        btCollisionObject* co0 = const_cast<btCollisionObject*>(manifoldPtr[i]->getBody0());
+        if (co0) maxUniqueId = btMax(maxUniqueId, co0->getUniqueId());
+        btCollisionObject* co1 = const_cast<btCollisionObject*>(manifoldPtr[i]->getBody1());
+        if (co1) maxUniqueId = btMax(maxUniqueId, co1->getUniqueId());
+    }
+
     // prepare uniqueId to solverBodyId table
     m_bodyUniqueIdToSolverBodyTable.resize( maxUniqueId + 1 );
     for ( int i = 0; i < m_bodyUniqueIdToSolverBodyTable.size(); i++ )
