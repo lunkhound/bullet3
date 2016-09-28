@@ -716,34 +716,34 @@ btSolverConstraint&	btSequentialImpulseConstraintSolver::addRollingFrictionConst
 
 int	btSequentialImpulseConstraintSolver::getOrInitSolverBody(btCollisionObject& body,btScalar timeStep)
 {
-    int uniqueId = body.getUniqueId();
-    btAssert( uniqueId < m_bodyUniqueIdToSolverBodyTable.size() );
-    int solverBodyId = m_bodyUniqueIdToSolverBodyTable[ uniqueId ];
-    // if no table entry yet,
-    if ( solverBodyId == -1 )
+    int solverBodyId = -1;
+    if (body.isStaticObject())
     {
-        // create a table entry for this body
-        btRigidBody* rb = btRigidBody::upcast( &body );
-        //convert both active and kinematic objects (for their velocity)
-        if ( rb && ( rb->getInvMass() || rb->isKinematicObject() ) )
+        // all fixed bodies (inf mass) get mapped to a single solver id
+        if ( m_fixedBodyId < 0 )
         {
+            m_fixedBodyId = m_tmpSolverBodyPool.size();
+            btSolverBody& fixedBody = m_tmpSolverBodyPool.expand();
+            initSolverBody( &fixedBody, 0, timeStep );
+        }
+        solverBodyId = m_fixedBodyId;
+    }
+    else
+    {
+        int uniqueId = body.getUniqueId();
+        btAssert( uniqueId < m_bodyUniqueIdToSolverBodyTable.size() );
+        solverBodyId = m_bodyUniqueIdToSolverBodyTable[ uniqueId ];
+        // if no table entry yet,
+        if ( solverBodyId == -1 )
+        {
+            // create a table entry for this body
             solverBodyId = m_tmpSolverBodyPool.size();
             btSolverBody& solverBody = m_tmpSolverBodyPool.expand();
             initSolverBody( &solverBody, &body, timeStep );
+            m_bodyUniqueIdToSolverBodyTable[ uniqueId ] = solverBodyId;
         }
-        else
-        {
-            // all fixed bodies (inf mass) get mapped to a single solver id
-            if ( m_fixedBodyId<0 )
-            {
-                m_fixedBodyId = m_tmpSolverBodyPool.size();
-                btSolverBody& fixedBody = m_tmpSolverBodyPool.expand();
-                initSolverBody( &fixedBody, 0, timeStep );
-            }
-            solverBodyId = m_fixedBodyId;
-        }
-        m_bodyUniqueIdToSolverBodyTable[ uniqueId ] = solverBodyId;
     }
+    btAssert( solverBodyId >= 0 );
     btAssert( solverBodyId < m_tmpSolverBodyPool.size() );
 	return solverBodyId;
 }
