@@ -95,7 +95,7 @@ struct WorkerThreadStatus
 
 struct IJob
 {
-    virtual void executeJob() = 0;
+    virtual void executeJob(int threadId) = 0;
 };
 
 class ParallelForJob : public IJob
@@ -105,24 +105,50 @@ class ParallelForJob : public IJob
     int mEnd;
 
 public:
-    ParallelForJob()
-    {
-        mBody = NULL;
-        mBegin = 0;
-        mEnd = 0;
-    }
-    void init( int iBegin, int iEnd, const btIParallelForBody& body )
+    ParallelForJob( int iBegin, int iEnd, const btIParallelForBody& body )
     {
         mBody = &body;
         mBegin = iBegin;
         mEnd = iEnd;
     }
-    virtual void executeJob() BT_OVERRIDE
+    virtual void executeJob(int threadId) BT_OVERRIDE
     {
         BT_PROFILE( "executeJob" );
 
         // call the functor body to do the work
         mBody->forLoop( mBegin, mEnd );
+    }
+};
+
+static const int kCacheLineSize = 64;
+
+struct ThreadLocalSum
+{
+    btScalar mSum;
+    char mCachePadding[ kCacheLineSize - sizeof( btScalar ) ];
+};
+
+class ParallelSumJob : public IJob
+{
+    const btIParallelSumBody* mBody;
+    ThreadLocalSum* mSumArray;
+    int mBegin;
+    int mEnd;
+
+public:
+    ParallelSumJob( int iBegin, int iEnd, const btIParallelSumBody& body, ThreadLocalSum* sums )
+    {
+        mBody = &body;
+        mSumArray = sums;
+        mBegin = iBegin;
+        mEnd = iEnd;
+    }
+    virtual void executeJob( int threadId ) BT_OVERRIDE
+    {
+        BT_PROFILE( "executeJob" );
+
+        // call the functor body to do the work
+        mSumArray[threadId].mSum += mBody->sumLoop( mBegin, mEnd );
     }
 };
 
@@ -230,7 +256,7 @@ static void WorkerThreadFunc( void* userPtr, void* lsMemory )
         if ( IJob* job = jobContext->consumeJob() )
         {
             localStorage->status = WorkerThreadStatus::kWorking;
-            job->executeJob();
+            job->executeJob( localStorage->threadId );
             localStorage->status = WorkerThreadStatus::kWaitingForWork;
         }
         else
@@ -256,7 +282,8 @@ class btTaskSchedulerDefault : public btITaskScheduler
 {
     JobContext m_jobContext;
     b3ThreadSupportInterface* m_threadSupport;
-    btAlignedObjectArray<ParallelForJob> m_jobs;
+    btAlignedObjectArray<char> m_jobMem;
+    btAlignedObjectArray<char> m_threadLocalMem;
     btSpinMutex m_antiNestingLock;  // prevent nested parallel-for
     int m_numThreads;
     int m_numWorkerThreads;
@@ -291,7 +318,7 @@ public:
         {
             WorkerThreadLocalStorage* storage = (WorkerThreadLocalStorage*) m_threadSupport->getThreadLocalMemory( i );
             btAssert( storage );
-            storage->threadId = i;
+            storage->threadId = i + 1;  // workers start at 1
             storage->status = WorkerThreadStatus::kSleeping;
         }
         setWorkersActive( false ); // no work for them yet
@@ -337,7 +364,7 @@ public:
         {
             if ( IJob* job = m_jobContext.consumeJob() )
             {
-                job->executeJob();
+                job->executeJob(0);
             }
             else
             {
@@ -389,12 +416,17 @@ public:
         int iterationCount = iEnd - iBegin;
         if ( iterationCount > grainSize && m_numWorkerThreads > 0 && m_antiNestingLock.tryLock() )
         {
+            typedef ParallelForJob JobType;
             int jobCount = ( iterationCount + grainSize - 1 ) / grainSize;
             btAssert( jobCount >= 2 );  // need more than one job for multithreading
-            if ( jobCount > m_jobs.size() )
+            int jobSize = sizeof( JobType );
+            int jobBufSize = jobSize * jobCount;
+            // make sure we have enough memory allocated to store jobs
+            if ( jobBufSize > m_jobMem.size() )
             {
-                m_jobs.resize( jobCount );
+                m_jobMem.resize( jobBufSize );
             }
+            // make sure job queue is big enough
             if ( jobCount > m_jobContext.m_jobQueue.capacity() )
             {
                 m_jobContext.m_jobQueue.reserve( jobCount );
@@ -406,12 +438,13 @@ public:
             wakeWorkers();
             // submit all of the jobs
             int iJob = 0;
+            JobType* jobs = reinterpret_cast<JobType*>( &m_jobMem[ 0 ] );
             for ( int i = iBegin; i < iEnd; i += grainSize )
             {
                 btAssert( iJob < jobCount );
                 int iE = btMin( i + grainSize, iEnd );
-                ParallelForJob& job = m_jobs[ iJob ];
-                job.init( i, iE, body );
+                JobType& job = jobs[ iJob ];
+                new ( (void*) &job ) ParallelForJob( i, iE, body );  // placement new
                 m_jobContext.submitJob( &job );
                 iJob++;
             }
@@ -425,6 +458,78 @@ public:
             BT_PROFILE( "parallelFor_mainThread" );
             // just run on main thread
             body.forLoop( iBegin, iEnd );
+        }
+    }
+    virtual btScalar parallelSum( int iBegin, int iEnd, int grainSize, const btIParallelSumBody& body ) BT_OVERRIDE
+    {
+        BT_PROFILE( "parallelSum_ThreadSupport" );
+        btAssert( iEnd >= iBegin );
+        btAssert( grainSize >= 1 );
+        int iterationCount = iEnd - iBegin;
+        if ( iterationCount > grainSize && m_numWorkerThreads > 0 && m_antiNestingLock.tryLock() )
+        {
+            typedef ParallelSumJob JobType;
+            int jobCount = ( iterationCount + grainSize - 1 ) / grainSize;
+            btAssert( jobCount >= 2 );  // need more than one job for multithreading
+            int jobSize = sizeof( JobType );
+            int jobBufSize = jobSize * jobCount;
+            // make sure we have enough memory allocated to store jobs
+            if ( jobBufSize > m_jobMem.size() )
+            {
+                m_jobMem.resize( jobBufSize );
+            }
+            // make sure job queue is big enough
+            if ( jobCount > m_jobContext.m_jobQueue.capacity() )
+            {
+                m_jobContext.m_jobQueue.reserve( jobCount );
+            }
+            // make sure thread local area is big enough
+            int threadLocalSize = m_numThreads * sizeof( ThreadLocalSum );
+            if ( threadLocalSize > m_threadLocalMem.size() )
+            {
+                m_threadLocalMem.resize( threadLocalSize );
+            }
+            // initialize summation
+            ThreadLocalSum* threadLocalSum = reinterpret_cast<ThreadLocalSum*>( &m_threadLocalMem[ 0 ] );
+            for ( int iThread = 0; iThread < m_numThreads; ++iThread )
+            {
+                threadLocalSum[ iThread ].mSum = btScalar( 0 );
+            }
+
+            m_jobContext.clearQueue();
+            // prepare worker threads for incoming work
+            setWorkersActive( true );
+            wakeWorkers();
+            // submit all of the jobs
+            int iJob = 0;
+            JobType* jobs = reinterpret_cast<JobType*>( &m_jobMem[ 0 ] );
+            for ( int i = iBegin; i < iEnd; i += grainSize )
+            {
+                btAssert( iJob < jobCount );
+                int iE = btMin( i + grainSize, iEnd );
+                JobType& job = jobs[ iJob ];
+                new ( (void*) &job ) ParallelSumJob( i, iE, body, threadLocalSum );  // placement new
+                m_jobContext.submitJob( &job );
+                iJob++;
+            }
+
+            // put the main thread to work on emptying the job queue and then wait for all workers to finish
+            waitJobs();
+            m_antiNestingLock.unlock();
+
+            // add up all the thread sums
+            btScalar sum = btScalar(0);
+            for ( int iThread = 0; iThread < m_numThreads; ++iThread )
+            {
+                sum += threadLocalSum[ iThread ].mSum;
+            }
+            return sum;
+        }
+        else
+        {
+            BT_PROFILE( "parallelSum_mainThread" );
+            // just run on main thread
+            return body.sumLoop( iBegin, iEnd );
         }
     }
 };

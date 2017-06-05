@@ -29,6 +29,7 @@ class btCollisionShape;
 #include "BulletCollision/CollisionDispatch/btCollisionDispatcherMt.h"
 #include "BulletDynamics/Dynamics/btSimulationIslandManagerMt.h"  // for setSplitIslands()
 #include "BulletDynamics/Dynamics/btDiscreteDynamicsWorldMt.h"
+#include "BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolverMt.h"
 #include "BulletDynamics/ConstraintSolver/btSequentialImpulseConstraintSolver.h"
 #include "BulletDynamics/ConstraintSolver/btNNCGConstraintSolver.h"
 #include "BulletDynamics/MLCPSolvers/btMLCPSolver.h"
@@ -39,7 +40,7 @@ class btCollisionShape;
 
 
 static int gNumIslands = 0;
-
+bool gAllowNestedParallelForLoops = false;
 
 class Profiler
 {
@@ -52,6 +53,10 @@ public:
         kRecordPredictUnconstrainedMotion,
         kRecordCreatePredictiveContacts,
         kRecordIntegrateTransforms,
+        kRecordSolverTotal,
+        kRecordSolverSetup,
+        kRecordSolverIterations,
+        kRecordSolverFinish,
         kRecordCount
     };
 
@@ -139,6 +144,41 @@ static void profileEndCallback( btDynamicsWorld *world, btScalar timeStep )
 }
 
 
+class MySequentialImpulseConstraintSolverMt : public btSequentialImpulseConstraintSolverMt
+{
+    typedef btSequentialImpulseConstraintSolverMt ParentClass;
+public:
+    BT_DECLARE_ALIGNED_ALLOCATOR();
+	
+	MySequentialImpulseConstraintSolverMt() {}
+
+    // for profiling
+	virtual btScalar solveGroupCacheFriendlySetup(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer) BT_OVERRIDE
+    {
+        ProfileHelper prof(Profiler::kRecordSolverSetup);
+        btScalar ret = ParentClass::solveGroupCacheFriendlySetup(bodies, numBodies, manifoldPtr, numManifolds, constraints, numConstraints, infoGlobal, debugDrawer );
+        return ret;
+    }
+    virtual btScalar solveGroupCacheFriendlyIterations( btCollisionObject** bodies, int numBodies, btPersistentManifold** manifoldPtr, int numManifolds, btTypedConstraint** constraints, int numConstraints, const btContactSolverInfo& infoGlobal, btIDebugDraw* debugDrawer ) BT_OVERRIDE
+    {
+        ProfileHelper prof(Profiler::kRecordSolverIterations);
+        btScalar ret = ParentClass::solveGroupCacheFriendlyIterations(bodies, numBodies, manifoldPtr, numManifolds, constraints, numConstraints, infoGlobal, debugDrawer );
+        return ret;
+    }
+    virtual btScalar solveGroupCacheFriendlyFinish(btCollisionObject** bodies,int numBodies,const btContactSolverInfo& infoGlobal) BT_OVERRIDE
+    {
+        ProfileHelper prof(Profiler::kRecordSolverFinish);
+        btScalar ret = ParentClass::solveGroupCacheFriendlyFinish(bodies, numBodies, infoGlobal);
+        return ret;
+    }
+    virtual btScalar solveGroup(btCollisionObject** bodies, int numBodies, btPersistentManifold** manifold, int numManifolds, btTypedConstraint** constraints, int numConstraints, const btContactSolverInfo& info, btIDebugDraw* debugDrawer, btDispatcher* dispatcher) BT_OVERRIDE
+    {
+        ProfileHelper prof(Profiler::kRecordSolverTotal);
+        btScalar ret = ParentClass::solveGroup(bodies, numBodies, manifold, numManifolds, constraints, numConstraints, info, debugDrawer, dispatcher);
+        return ret;
+    }
+};
+
 ///
 /// MyCollisionDispatcher -- subclassed for profiling purposes
 ///
@@ -218,6 +258,8 @@ btConstraintSolver* createSolverByType( SolverType t )
     {
     case SOLVER_TYPE_SEQUENTIAL_IMPULSE:
         return new btSequentialImpulseConstraintSolver();
+    case SOLVER_TYPE_SEQUENTIAL_IMPULSE_MT:
+        return new MySequentialImpulseConstraintSolverMt();
     case SOLVER_TYPE_NNCG:
         return new btNNCGConstraintSolver();
     case SOLVER_TYPE_MLCP_PGS:
@@ -310,7 +352,7 @@ static bool gDisplayProfileInfo = true;
 static bool gMultithreadedWorld = false;
 static bool gDisplayProfileInfo = false;
 #endif
-static SolverType gSolverType = SOLVER_TYPE_SEQUENTIAL_IMPULSE;
+static SolverType gSolverType = SOLVER_TYPE_SEQUENTIAL_IMPULSE_MT;
 static int gSolverMode = SOLVER_SIMD |
                         SOLVER_USE_WARMSTARTING |
                         // SOLVER_RANDMIZE_ORDER |
@@ -318,8 +360,10 @@ static int gSolverMode = SOLVER_SIMD |
                         // SOLVER_USE_2_FRICTION_DIRECTIONS |
                         0;
 static btScalar gSliderSolverIterations = 10.0f; // should be int
-
 static btScalar gSliderNumThreads = 1.0f;  // should be int
+static btScalar gSliderLargeIslandManifoldCount = 1000.0f; // should be int
+static btScalar gSliderMinBatchSize = 20.0f; // should be int
+static btScalar gSliderMaxBatchSize = 60.0f; // should be int
 
 
 ////////////////////////////////////
@@ -435,6 +479,26 @@ static void setSolverIterationCountCallback(float val, void* userPtr)
     }
 }
 
+static void setLargeIslandManifoldCountCallback( float val, void* userPtr )
+{
+    gLargeIslandManifoldCount = int( gSliderLargeIslandManifoldCount );
+    btSequentialImpulseConstraintSolverMt::sMinimumContactManifoldsForBatching = gLargeIslandManifoldCount;
+}
+
+static void setMinBatchSizeCallback( float val, void* userPtr )
+{
+    gSliderMaxBatchSize = (std::max)(gSliderMinBatchSize, gSliderMaxBatchSize);
+    btSequentialImpulseConstraintSolverMt::sMinBatchSize = int(gSliderMinBatchSize);
+    btSequentialImpulseConstraintSolverMt::sMaxBatchSize = int(gSliderMaxBatchSize);
+}
+
+static void setMaxBatchSizeCallback( float val, void* userPtr )
+{
+    gSliderMinBatchSize = (std::min)(gSliderMinBatchSize, gSliderMaxBatchSize);
+    btSequentialImpulseConstraintSolverMt::sMinBatchSize = int(gSliderMinBatchSize);
+    btSequentialImpulseConstraintSolverMt::sMaxBatchSize = int(gSliderMaxBatchSize);
+}
+
 void CommonRigidBodyMTBase::createEmptyDynamicsWorld()
 {
     gNumIslands = 0;
@@ -476,6 +540,10 @@ void CommonRigidBodyMTBase::createEmptyDynamicsWorld()
     {
         // single threaded world
         m_multithreadedWorld = false;
+        if ( m_solverType == SOLVER_TYPE_SEQUENTIAL_IMPULSE_MT )
+        {
+            gSolverType = m_solverType = SOLVER_TYPE_SEQUENTIAL_IMPULSE;
+        }
 
         ///collision configuration contains default setup for memory, collision setup
         m_collisionConfiguration = new btDefaultCollisionConfiguration();
@@ -494,6 +562,7 @@ void CommonRigidBodyMTBase::createEmptyDynamicsWorld()
     m_dynamicsWorld->setInternalTickCallback( profileEndCallback, NULL, false );
     m_dynamicsWorld->setGravity( btVector3( 0, -10, 0 ) );
     m_dynamicsWorld->getSolverInfo().m_solverMode = gSolverMode;
+   	m_dynamicsWorld->getSolverInfo().m_numIterations = btMax(1, int(gSliderSolverIterations));
     createDefaultParameters();
 }
 
@@ -632,6 +701,44 @@ void CommonRigidBodyMTBase::createDefaultParameters()
             slider.m_clampToIntegers = true;
             m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
         }
+        {
+            ButtonParams button( "Allow Nested ParallelFor", 0, true );
+            button.m_initialState = btSequentialImpulseConstraintSolverMt::sAllowNestedParallelForLoops;
+            button.m_userPointer = &btSequentialImpulseConstraintSolverMt::sAllowNestedParallelForLoops;
+            button.m_callback = boolPtrButtonCallback;
+            m_guiHelper->getParameterInterface()->registerButtonParameter( button );
+        }
+        {
+            // a slider for the number of manifolds an island needs to be too large for parallel dispatch
+            SliderParams slider( "LgIslandManiCount", &gSliderLargeIslandManifoldCount );
+            slider.m_minVal = 1.0f;
+            slider.m_maxVal = 10000.0f;
+            slider.m_callback = setLargeIslandManifoldCountCallback;
+            slider.m_userPointer = NULL;
+            slider.m_clampToIntegers = true;
+            m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
+        }
+        {
+            // a slider for the sequentialImpulseConstraintSolverMt min batch size (when batching)
+            SliderParams slider( "Min batch size", &gSliderMinBatchSize );
+            slider.m_minVal = 1.0f;
+            slider.m_maxVal = 1000.0f;
+            slider.m_callback = setMinBatchSizeCallback;
+            slider.m_userPointer = NULL;
+            slider.m_clampToIntegers = true;
+            m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
+        }
+        {
+            // a slider for the sequentialImpulseConstraintSolverMt max batch size (when batching)
+            SliderParams slider( "Max batch size", &gSliderMaxBatchSize );
+            slider.m_minVal = 1.0f;
+            slider.m_maxVal = 1000.0f;
+            slider.m_callback = setMaxBatchSizeCallback;
+            slider.m_userPointer = NULL;
+            slider.m_clampToIntegers = true;
+            m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
+        }
+        
 #endif // #if BT_THREADSAFE
     }
 }
@@ -643,6 +750,7 @@ void CommonRigidBodyMTBase::drawScreenText()
     int xCoord = 400;
     int yCoord = 30;
     int yStep = 30;
+    int indent = 30;
     if (m_solverType != gSolverType)
     {
         sprintf( msg, "restart example to change solver type" );
@@ -719,6 +827,34 @@ void CommonRigidBodyMTBase::drawScreenText()
                      gProfiler.getAverageTime( Profiler::kRecordDispatchIslands )*0.001f
                      );
             m_guiHelper->getAppInterface()->drawText( msg, xCoord, yCoord, 0.4f );
+            yCoord += yStep;
+
+            sprintf( msg,
+                     "SolverTotal %5.3f ms",
+                     gProfiler.getAverageTime( Profiler::kRecordSolverTotal )*0.001f
+                     );
+            m_guiHelper->getAppInterface()->drawText( msg, xCoord, yCoord, 0.4f );
+            yCoord += yStep;
+
+            sprintf( msg,
+                     "SolverSetup %5.3f ms",
+                     gProfiler.getAverageTime( Profiler::kRecordSolverSetup )*0.001f
+                     );
+            m_guiHelper->getAppInterface()->drawText( msg, xCoord + indent, yCoord, 0.4f );
+            yCoord += yStep;
+
+            sprintf( msg,
+                     "SolverIterations %5.3f ms",
+                     gProfiler.getAverageTime( Profiler::kRecordSolverIterations )*0.001f
+                     );
+            m_guiHelper->getAppInterface()->drawText( msg, xCoord + indent, yCoord, 0.4f );
+            yCoord += yStep;
+
+            sprintf( msg,
+                     "SolverFinish %5.3f ms",
+                     gProfiler.getAverageTime( Profiler::kRecordSolverFinish )*0.001f
+                     );
+            m_guiHelper->getAppInterface()->drawText( msg, xCoord + indent, yCoord, 0.4f );
             yCoord += yStep;
 
             sprintf( msg,
