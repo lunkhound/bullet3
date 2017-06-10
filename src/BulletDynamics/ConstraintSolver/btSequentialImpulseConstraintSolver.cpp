@@ -1630,6 +1630,7 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlySetup(btCol
 
 btScalar btSequentialImpulseConstraintSolver::solveSingleIteration(int iteration, btCollisionObject** /*bodies */,int /*numBodies*/,btPersistentManifold** /*manifoldPtr*/, int /*numManifolds*/,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* /*debugDrawer*/)
 {
+    BT_PROFILE("solveSingleIteration");
 	btScalar leastSquaresResidual = 0.f;
 
 	int numNonContactPool = m_tmpSolverNonContactConstraintPool.size();
@@ -1808,6 +1809,7 @@ btScalar btSequentialImpulseConstraintSolver::solveSingleIteration(int iteration
 
 void btSequentialImpulseConstraintSolver::solveGroupCacheFriendlySplitImpulseIterations(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer)
 {
+	BT_PROFILE("solveGroupCacheFriendlySplitImpulseIterations");
 	int iteration;
 	if (infoGlobal.m_splitImpulse)
 	{
@@ -1868,6 +1870,7 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyIterations(
 
 btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCollisionObject** bodies,int numBodies,const btContactSolverInfo& infoGlobal)
 {
+	BT_PROFILE("solveGroupCacheFriendlyFinish");
 	int numPoolConstraints = m_tmpSolverContactConstraintPool.size();
 	int i,j;
 
@@ -1912,7 +1915,6 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCo
 			constr->setEnabled(false);
 		}
 	}
-
 
 
 	for ( i=0;i<m_tmpSolverBodyPool.size();i++)
