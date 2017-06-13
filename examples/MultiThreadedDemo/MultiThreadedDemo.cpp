@@ -25,10 +25,10 @@ subject to the following restrictions:
 
 
 
-static btScalar gSliderStackRows = 8.0f;
-static btScalar gSliderStackColumns = 6.0f;
-static btScalar gSliderStackHeight = 10.0f;
-static btScalar gSliderStackWidth = 1.0f;
+static btScalar gSliderStackRows = 1.0f;
+static btScalar gSliderStackColumns = 1.0f;
+static btScalar gSliderStackHeight = 15.0f;
+static btScalar gSliderStackWidth = 8.0f;
 static btScalar gSliderGroundHorizontalAmplitude = 0.0f;
 static btScalar gSliderGroundVerticalAmplitude = 0.0f;
 static btScalar gSliderGroundTilt = 0.0f;
