@@ -362,9 +362,9 @@ static int gSolverMode = SOLVER_SIMD |
 static btScalar gSliderSolverIterations = 10.0f; // should be int
 static btScalar gSliderNumThreads = 1.0f;  // should be int
 static btScalar gSliderLargeIslandManifoldCount = 1000.0f; // should be int
-static btScalar gSliderMinBatchSize = 20.0f; // should be int
-static btScalar gSliderMaxBatchSize = 60.0f; // should be int
-
+static btScalar gSliderMinBatchSize = 80.0f; // should be int
+static btScalar gSliderMaxBatchSize = 100.0f; // should be int
+static btScalar gSliderLeastSquaresResidualThreshold = 0.0f;
 
 ////////////////////////////////////
 CommonRigidBodyMTBase::CommonRigidBodyMTBase( struct GUIHelperInterface* helper )
@@ -499,13 +499,24 @@ static void setMaxBatchSizeCallback( float val, void* userPtr )
     btSequentialImpulseConstraintSolverMt::sMaxBatchSize = int(gSliderMaxBatchSize);
 }
 
+static void setLeastSquaresResidualThresholdCallback( float val, void* userPtr )
+{
+    if (btDiscreteDynamicsWorld* world = reinterpret_cast<btDiscreteDynamicsWorld*>(userPtr))
+    {
+        world->getSolverInfo().m_leastSquaresResidualThreshold = gSliderLeastSquaresResidualThreshold;
+    }
+}
+
 void CommonRigidBodyMTBase::createEmptyDynamicsWorld()
 {
     gNumIslands = 0;
     m_solverType = gSolverType;
-#if BT_THREADSAFE && (BT_USE_OPENMP || BT_USE_PPL || BT_USE_TBB)
+#if BT_THREADSAFE
     btAssert( btGetTaskScheduler() != NULL );
-    m_multithreadCapable = true;
+    if (NULL != btGetTaskScheduler() && gTaskSchedulerMgr.getNumTaskSchedulers() > 1)
+    {
+        m_multithreadCapable = true;
+    }
 #endif
     if ( gMultithreadedWorld )
     {
@@ -611,6 +622,16 @@ void CommonRigidBodyMTBase::createDefaultParameters()
         slider.m_callback = setSolverIterationCountCallback;
         slider.m_userPointer = m_dynamicsWorld;
         slider.m_clampToIntegers = true;
+        m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
+    }
+    {
+        // a slider for the solver leastSquaresResidualThreshold (used to run fewer solver iterations when convergence is good)
+        SliderParams slider( "Solver residual thresh", &gSliderLeastSquaresResidualThreshold );
+        slider.m_minVal = 0.0f;
+        slider.m_maxVal = 2.0f;
+        slider.m_callback = setLeastSquaresResidualThresholdCallback;
+        slider.m_userPointer = m_dynamicsWorld;
+        slider.m_clampToIntegers = false;
         m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
     }
     {
@@ -738,7 +759,6 @@ void CommonRigidBodyMTBase::createDefaultParameters()
             slider.m_clampToIntegers = true;
             m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
         }
-        
 #endif // #if BT_THREADSAFE
     }
 }
