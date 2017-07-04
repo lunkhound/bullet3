@@ -1868,15 +1868,10 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyIterations(
 	return 0.f;
 }
 
-btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCollisionObject** bodies,int numBodies,const btContactSolverInfo& infoGlobal)
+void btSequentialImpulseConstraintSolver::warmstartingWriteBackContacts(const btContactSolverInfo& infoGlobal)
 {
-	BT_PROFILE("solveGroupCacheFriendlyFinish");
 	int numPoolConstraints = m_tmpSolverContactConstraintPool.size();
-	int i,j;
-
-	if (infoGlobal.m_solverMode & SOLVER_USE_WARMSTARTING)
-	{
-		for (j=0;j<numPoolConstraints;j++)
+		for (int j=0;j<numPoolConstraints;j++)
 		{
 			const btSolverConstraint& solveManifold = m_tmpSolverContactConstraintPool[j];
 			btManifoldPoint* pt = (btManifoldPoint*) solveManifold.m_originalContactPoint;
@@ -1892,10 +1887,20 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCo
 			}
 			//do a callback here?
 		}
+}
+
+
+btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCollisionObject** bodies,int numBodies,const btContactSolverInfo& infoGlobal)
+{
+	BT_PROFILE("solveGroupCacheFriendlyFinish");
+
+	if (infoGlobal.m_solverMode & SOLVER_USE_WARMSTARTING)
+	{
+        warmstartingWriteBackContacts(infoGlobal);
 	}
 
-	numPoolConstraints = m_tmpSolverNonContactConstraintPool.size();
-	for (j=0;j<numPoolConstraints;j++)
+	int numPoolConstraints = m_tmpSolverNonContactConstraintPool.size();
+	for (int j=0;j<numPoolConstraints;j++)
 	{
 		const btSolverConstraint& solverConstr = m_tmpSolverNonContactConstraintPool[j];
 		btTypedConstraint* constr = (btTypedConstraint*)solverConstr.m_originalContactPoint;
@@ -1917,7 +1922,7 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCo
 	}
 
 
-	for ( i=0;i<m_tmpSolverBodyPool.size();i++)
+	for (int i=0;i<m_tmpSolverBodyPool.size();i++)
 	{
 		btRigidBody* body = m_tmpSolverBodyPool[i].m_originalBody;
 		if (body)

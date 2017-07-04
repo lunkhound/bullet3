@@ -20,34 +20,79 @@ subject to the following restrictions:
 #include "LinearMath/btThreads.h"
 
 
-ATTRIBUTE_ALIGNED16(class) btSequentialImpulseConstraintSolverMt : public btSequentialImpulseConstraintSolver
+struct BatchedConstraints
 {
-public:
-	//virtual void convertContacts(btPersistentManifold** manifoldPtr, int numManifolds, const btContactSolverInfo& infoGlobal);
-	//virtual void solveGroupCacheFriendlySplitImpulseIterations(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer);
-	//virtual btScalar solveGroupCacheFriendlyFinish(btCollisionObject** bodies,int numBodies,const btContactSolverInfo& infoGlobal);
-	virtual btScalar solveSingleIteration(int iteration, btCollisionObject** bodies ,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer) BT_OVERRIDE;
-	virtual btScalar solveGroupCacheFriendlySetup(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer) BT_OVERRIDE;
-	//virtual btScalar solveGroupCacheFriendlyIterations(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer);
-
     struct Range
     {
         int begin;
         int end;
 
-        Range() : begin(0), end(0) {}
-        Range(int _beg, int _end) : begin(_beg), end(_end) {}
+        Range() : begin( 0 ), end( 0 ) {}
+        Range( int _beg, int _end ) : begin( _beg ), end( _end ) {}
     };
-    struct BatchedConstraints
-    {
-        btAlignedObjectArray<int> mConstraintIndices;
-        btAlignedObjectArray<Range> mBatches;  // each batch is a range of indices in the mConstraintIndices array
-        btAlignedObjectArray<Range> mPhases;  // each phase is range of indices in the mBatches array
-        btAlignedObjectArray<int> mPhaseOrder;
 
-        BatchedConstraints() {}
-        void setup(btConstraintArray* constraints, const btAlignedObjectArray<btSolverBody>& bodies, int minBatchSize, int maxBatchSize);
-        void setup2(btConstraintArray* constraints, const btAlignedObjectArray<btSolverBody>& bodies, int minBatchSize, int maxBatchSize);
+    btAlignedObjectArray<int> m_constraintIndices;
+    btAlignedObjectArray<Range> m_batches;  // each batch is a range of indices in the m_constraintIndices array
+    btAlignedObjectArray<Range> m_phases;  // each phase is range of indices in the m_batches array
+    btAlignedObjectArray<int> m_phaseOrder;  // phases can be done in any order, so we can randomize the order here
+
+    BatchedConstraints() {}
+    void setup( btConstraintArray* constraints, const btAlignedObjectArray<btSolverBody>& bodies, int minBatchSize, int maxBatchSize );
+    bool validate( btConstraintArray* constraints, const btAlignedObjectArray<btSolverBody>& bodies ) const;
+};
+
+
+///
+/// btSequentialImpulseConstraintSolverMt
+///
+///  A multithreaded variant of the sequential impulse constraint solver. The constraints to be solved are grouped into
+///  batches and phases where each batch of constraints within a given phase can be solved in parallel with the rest.
+///  Ideally we want as few phases as possible, and each phase should have many batches, and all of the batches should
+///  have about the same number of constraints.
+///  This method works best on a large island of many constraints.
+///
+///  Supports all of the features of the normal sequential impulse solver such as:
+///    - split penetration impulse
+///    - rolling friction
+///    - interleaving constraints
+///    - warmstarting
+///    - 2 friction directions
+///    - randomized constraint ordering
+///    - early termination when leastSquaresResidualThreshold is satisfied
+///
+///  When the SOLVER_INTERLEAVE_CONTACT_AND_FRICTION_CONSTRAINTS flag is enabled, unlike the normal SequentialImpulse solver,
+///  the rolling friction is interleaved as well.
+///  Interleaving the contact penetration constraints with friction reduces the number of parallel loops that need to be done,
+///  which reduces threading overhead so it can be a performance win, however, it does seem to produce a less stable simulation,
+///  at least on stacks of blocks.
+///
+///  When the SOLVER_RANDMIZE_ORDER flag is enabled, the ordering of phases, and the ordering of constraints within each batch
+///  is randomized, however it does not swap constraints between batches.
+///  This is to avoid regenerating the batches for each solver iteration which would be quite costly in performance.
+///
+///  Note that a non-zero leastSquaresResidualThreshold could possibly affect the determinism of the simulation
+///  because floating point addition is not associative due to rounding error.
+///
+ATTRIBUTE_ALIGNED16(class) btSequentialImpulseConstraintSolverMt : public btSequentialImpulseConstraintSolver
+{
+public:
+	virtual void convertContacts(btPersistentManifold** manifoldPtr, int numManifolds, const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
+	virtual void solveGroupCacheFriendlySplitImpulseIterations(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer) BT_OVERRIDE;
+	virtual btScalar solveSingleIteration(int iteration, btCollisionObject** bodies ,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer) BT_OVERRIDE;
+	virtual btScalar solveGroupCacheFriendlySetup(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer) BT_OVERRIDE;
+	//virtual btScalar solveGroupCacheFriendlyFinish(btCollisionObject** bodies,int numBodies,const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
+
+    // temp struct used to collect info from persistent manifolds into a cache-friendly struct using multiple threads
+    struct btContactManifoldCachedInfo
+    {
+        static const int MAX_NUM_CONTACT_POINTS = 4;
+
+        int numTouchingContacts;
+        int solverBodyIds[ 2 ];
+        int contactIndex;
+        int rollingFrictionIndex;
+        bool contactHasRollingFriction[ MAX_NUM_CONTACT_POINTS ];
+        btManifoldPoint* contactPoints[ MAX_NUM_CONTACT_POINTS ];
     };
     // parameters to control batching
     static bool sAllowNestedParallelForLoops;
@@ -56,19 +101,32 @@ public:
     static int sMaxBatchSize;
 
 protected:
-    BatchedConstraints m_batchedNonContactConstraints;
     BatchedConstraints m_batchedContactConstraints;
+    BatchedConstraints m_batchedJointConstraints;
     int m_numFrictionDirections;
     bool m_useBatching;
+    bool m_useObsoleteJointConstraints;
+    //btAlignedObjectArray<btContactManifoldCachedInfo> m_manifoldCachedInfoArray;
+    btAlignedObjectArray<int> m_rollingFrictionIndexTable;  // lookup table mapping contact index to rolling friction index
+    btSpinMutex m_bodySolverArrayMutex;
+    char m_antiFalseSharingPadding[64]; // padding to keep mutexes in separate cachelines
+    btSpinMutex m_kinematicBodyUniqueIdToSolverBodyTableMutex;
 
     virtual void randomizeConstraintOrdering( int iteration, int numIterations );
-    virtual btScalar resolveAllNonContactConstraints( int iteration );
+    virtual btScalar resolveAllJointConstraints( int iteration );
     virtual btScalar resolveAllContactConstraints();
     virtual btScalar resolveAllContactFrictionConstraints();
     virtual btScalar resolveAllContactConstraintsInterleaved();
     virtual btScalar resolveAllRollingFrictionConstraints();
 
-    virtual void setupBatchedConstraints();
+    virtual void setupBatchedContactConstraints();
+    virtual void setupBatchedJointConstraints();
+    virtual void warmstartingWriteBackContacts(const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
+
+	int getOrInitSolverBodyThreadsafe(btCollisionObject& body, btScalar timeStep);
+    void allocAllContactConstraints(btPersistentManifold** manifoldPtr, int numManifolds, const btContactSolverInfo& infoGlobal);
+    void setupAllContactConstraints(const btContactSolverInfo& infoGlobal);
+    void randomizeBatchedConstraintOrdering( BatchedConstraints* batchedConstraints );
 
 public:
 
@@ -77,11 +135,17 @@ public:
 	btSequentialImpulseConstraintSolverMt();
 	virtual ~btSequentialImpulseConstraintSolverMt();
 
-    btScalar resolveMultipleNonContactConstraints( const btAlignedObjectArray<int>& consIndices, int batchBegin, int batchEnd, int iteration );
+    btScalar resolveMultipleJointConstraints( const btAlignedObjectArray<int>& consIndices, int batchBegin, int batchEnd, int iteration );
     btScalar resolveMultipleContactConstraints( const btAlignedObjectArray<int>& consIndices, int batchBegin, int batchEnd );
+    btScalar resolveMultipleContactSplitPenetrationImpulseConstraints( const btAlignedObjectArray<int>& consIndices, int batchBegin, int batchEnd );
     btScalar resolveMultipleContactFrictionConstraints( const btAlignedObjectArray<int>& consIndices, int batchBegin, int batchEnd );
+    btScalar resolveMultipleContactRollingFrictionConstraints( const btAlignedObjectArray<int>& consIndices, int batchBegin, int batchEnd );
     btScalar resolveMultipleContactConstraintsInterleaved( const btAlignedObjectArray<int>& consIndices, int batchBegin, int batchEnd );
-	//virtual btScalar solveGroup(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifold,int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& info, btIDebugDraw* debugDrawer,btDispatcher* dispatcher);
+
+    void internalCollectContactManifoldCachedInfo(btContactManifoldCachedInfo* cachedInfoArray, btPersistentManifold** manifold, int numManifolds, const btContactSolverInfo& infoGlobal);
+    void internalAllocContactConstraints(const btContactManifoldCachedInfo* cachedInfoArray, int numManifolds);
+    void internalSetupContactConstraints(int iContact, const btContactSolverInfo& infoGlobal);
+    void internalWarmstartingWriteContactPoints(int iBegin, int iEnd);
 };
 
 
