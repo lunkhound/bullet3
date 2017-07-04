@@ -1,6 +1,5 @@
 
 #include "LinearMath/btTransform.h"
-#include "../Utils/b3Clock.h"
 #include "LinearMath/btAlignedObjectArray.h"
 #include "LinearMath/btThreads.h"
 #include "LinearMath/btQuickprof.h"
@@ -79,6 +78,14 @@ int getNumHardwareThreads()
 }
 
 #endif
+
+
+void btSpinPause()
+{
+#if defined( _WIN32 )
+    YieldProcessor();
+#endif
+}
 
 
 struct WorkerThreadStatus
@@ -162,6 +169,7 @@ struct JobContext
         m_tailIndex = 0;
         m_workersShouldCheckQueue = false;
         m_useSpinMutex = false;
+        m_coolDownTime = 1000; // 1000 microseconds
     }
     b3CriticalSection* m_queueLock;
     btSpinMutex m_mutex;
@@ -172,6 +180,8 @@ struct JobContext
     int m_tailIndex;
     int m_headIndex;
     bool m_useSpinMutex;
+    unsigned int m_coolDownTime;
+    btClock m_clock;
 
     void lockQueue()
     {
@@ -239,6 +249,8 @@ struct WorkerThreadLocalStorage
 {
     int threadId;
     WorkerThreadStatus::Type status;
+    int numJobsFinished;
+    btSpinMutex m_mutex;
 };
 
 
@@ -246,28 +258,49 @@ static void WorkerThreadFunc( void* userPtr, void* lsMemory )
 {
     BT_PROFILE( "WorkerThreadFunc" );
     WorkerThreadLocalStorage* localStorage = (WorkerThreadLocalStorage*) lsMemory;
-    localStorage->status = WorkerThreadStatus::kWaitingForWork;
-    //printf( "WorkerThreadFunc: worker %d start working\n", localStorage->threadId );
-
     JobContext* jobContext = (JobContext*) userPtr;
 
-    while ( jobContext->m_workersShouldCheckQueue )
+    bool shouldSleep = false;
+    while (! shouldSleep)
     {
-        if ( IJob* job = jobContext->consumeJob() )
+        // do work
+        localStorage->m_mutex.lock();
+        while ( IJob* job = jobContext->consumeJob() )
         {
             localStorage->status = WorkerThreadStatus::kWorking;
             job->executeJob( localStorage->threadId );
-            localStorage->status = WorkerThreadStatus::kWaitingForWork;
+            localStorage->numJobsFinished++;
         }
-        else
+        localStorage->status = WorkerThreadStatus::kWaitingForWork;
+        localStorage->m_mutex.unlock();
+        unsigned long long int clockStart = jobContext->m_clock.getTimeMicroseconds();
+        // while queue is empty,
+        while (jobContext->m_queueIsEmpty)
         {
             // todo: spin wait a bit to avoid hammering the empty queue
+            btSpinPause();
+            // if jobs are incoming,
+            if (jobContext->m_workersShouldCheckQueue)
+            {
+                clockStart = jobContext->m_clock.getTimeMicroseconds(); // reset clock
+            }
+            else
+            {
+                // if no jobs incoming and queue has been empty for the cooldown time, sleep
+                unsigned long long int timeElapsed = jobContext->m_clock.getTimeMicroseconds() - clockStart;
+                if (timeElapsed > jobContext->m_coolDownTime)
+                {
+                    shouldSleep = true;
+                    break;
+                }
+            }
         }
     }
 
-    //printf( "WorkerThreadFunc stop working\n" );
-    localStorage->status = WorkerThreadStatus::kSleeping;
     // go idle
+    localStorage->m_mutex.lock();
+    localStorage->status = WorkerThreadStatus::kSleeping;
+    localStorage->m_mutex.unlock();
 }
 
 
@@ -287,7 +320,8 @@ class btTaskSchedulerDefault : public btITaskScheduler
     btSpinMutex m_antiNestingLock;  // prevent nested parallel-for
     int m_numThreads;
     int m_numWorkerThreads;
-    int m_numWorkersRunning;
+    int m_numWorkersStarted;
+    int m_numJobs;
 public:
 
     btTaskSchedulerDefault() : btITaskScheduler("ThreadSupport")
@@ -301,7 +335,7 @@ public:
             m_numThreads = 4;
         }
         m_numWorkerThreads = m_numThreads - 1;
-        m_numWorkersRunning = 0;
+        m_numWorkersStarted = 0;
     }
 
     virtual ~btTaskSchedulerDefault()
@@ -327,6 +361,7 @@ public:
     virtual void shutdown()
     {
         setWorkersActive( false );
+        m_jobContext.m_coolDownTime = 0;
         waitForWorkersToSleep();
         m_threadSupport->deleteCriticalSection( m_jobContext.m_queueLock );
         m_jobContext.m_queueLock = NULL;
@@ -360,52 +395,98 @@ public:
     {
         BT_PROFILE( "waitJobs" );
         // have the main thread work until the job queue is empty
-        for ( ;; )
+        int numMainThreadJobsFinished = 0;
+        while ( IJob* job = m_jobContext.consumeJob() )
         {
-            if ( IJob* job = m_jobContext.consumeJob() )
-            {
-                job->executeJob(0);
-            }
-            else
-            {
-                break;
-            }
+            job->executeJob( 0 );
+            numMainThreadJobsFinished++;
         }
         // done with jobs for now, tell workers to rest
         setWorkersActive( false );
-        waitForWorkersToSleep();
+
+        unsigned long long int clockStart = m_jobContext.m_clock.getTimeMicroseconds();
+        // wait for workers to finish any jobs in progress
+        while ( true )
+        {
+            int numWorkerJobsFinished = 0;
+            for ( int iWorker = 0; iWorker < m_numWorkerThreads; ++iWorker )
+            {
+                WorkerThreadLocalStorage* storage = static_cast<WorkerThreadLocalStorage*>( m_threadSupport->getThreadLocalMemory( iWorker ) );
+                storage->m_mutex.lock();
+                numWorkerJobsFinished += storage->numJobsFinished;
+                storage->m_mutex.unlock();
+            }
+            if (numWorkerJobsFinished + numMainThreadJobsFinished == m_numJobs)
+            {
+                break;
+            }
+            unsigned long long int timeElapsed = m_jobContext.m_clock.getTimeMicroseconds() - clockStart;
+            btAssert(timeElapsed < 1000);
+            if (timeElapsed > 100000)
+            {
+                break;
+            }
+            btSpinPause();
+        }
     }
 
-    void wakeWorkers()
+    void wakeWorkers(int numWorkersToWake)
     {
         BT_PROFILE( "wakeWorkers" );
         btAssert( m_jobContext.m_workersShouldCheckQueue );
-        // tell each worker thread to start working
-        for ( int i = 0; i < m_numWorkerThreads; i++ )
+        int numDesiredWorkers = btMin(numWorkersToWake, m_numWorkerThreads);
+        int numActiveWorkers = 0;
+        for ( int iWorker = 0; iWorker < m_numWorkerThreads; ++iWorker )
         {
-            m_threadSupport->runTask( B3_THREAD_SCHEDULE_TASK, &m_jobContext, i );
-            m_numWorkersRunning++;
+            // note this count of active workers is not necessarily totally reliable, because a worker thread could be
+            // just about to put itself to sleep. So we may on occasion fail to wake up all the workers. It should be rare.
+            WorkerThreadLocalStorage* storage = static_cast<WorkerThreadLocalStorage*>( m_threadSupport->getThreadLocalMemory( iWorker ) );
+            if (storage->status != WorkerThreadStatus::kSleeping)
+            {
+                numActiveWorkers++;
+            }
+        }
+        for ( int iWorker = 0; iWorker < m_numWorkerThreads && numActiveWorkers < numDesiredWorkers; ++iWorker )
+        {
+            WorkerThreadLocalStorage* storage = static_cast<WorkerThreadLocalStorage*>( m_threadSupport->getThreadLocalMemory( iWorker ) );
+            if (storage->status == WorkerThreadStatus::kSleeping)
+            {
+                m_threadSupport->runTask( B3_THREAD_SCHEDULE_TASK, &m_jobContext, iWorker );
+                m_numWorkersStarted++;
+                numActiveWorkers++;
+            }
         }
     }
 
     void waitForWorkersToSleep()
     {
         BT_PROFILE( "waitForWorkersToSleep" );
-        while ( m_numWorkersRunning > 0 )
+        //m_threadSupport->waitForAllTasksToComplete();
+        int numWorkersToWaitFor = btMin(m_numWorkersStarted, m_numWorkerThreads);
+        for ( int i = 0; i < numWorkersToWaitFor; i++ )
         {
             int iThread;
             int threadStatus;
-            m_threadSupport->waitForResponse( &iThread, &threadStatus );  // wait for worker threads to finish working
-            m_numWorkersRunning--;
+            m_threadSupport->waitForResponse( &iThread, &threadStatus );  // wait for worker threads to finish running
         }
-        //m_threadSupport->waitForAllTasksToComplete();
         for ( int i = 0; i < m_numWorkerThreads; i++ )
         {
-            //m_threadSupport->waitForTaskCompleted( i );
-            WorkerThreadLocalStorage* storage = (WorkerThreadLocalStorage*) m_threadSupport->getThreadLocalMemory( i );
+            WorkerThreadLocalStorage* storage = static_cast<WorkerThreadLocalStorage*>( m_threadSupport->getThreadLocalMemory(i) );
             btAssert( storage );
             btAssert( storage->status == WorkerThreadStatus::kSleeping );
         }
+    }
+
+    void prepareWorkerThreads()
+    {
+        for ( int iWorker = 0; iWorker < m_numWorkerThreads; ++iWorker )
+        {
+            WorkerThreadLocalStorage* storage = static_cast<WorkerThreadLocalStorage*>( m_threadSupport->getThreadLocalMemory( iWorker ) );
+            storage->m_mutex.lock();
+            storage->numJobsFinished = 0;
+            storage->m_mutex.unlock();
+        }
+        setWorkersActive( true );
     }
 
     virtual void parallelFor( int iBegin, int iEnd, int grainSize, const btIParallelForBody& body ) BT_OVERRIDE
@@ -418,6 +499,7 @@ public:
         {
             typedef ParallelForJob JobType;
             int jobCount = ( iterationCount + grainSize - 1 ) / grainSize;
+            m_numJobs = jobCount;
             btAssert( jobCount >= 2 );  // need more than one job for multithreading
             int jobSize = sizeof( JobType );
             int jobBufSize = jobSize * jobCount;
@@ -434,8 +516,7 @@ public:
 
             m_jobContext.clearQueue();
             // prepare worker threads for incoming work
-            setWorkersActive( true );
-            wakeWorkers();
+            prepareWorkerThreads();
             // submit all of the jobs
             int iJob = 0;
             JobType* jobs = reinterpret_cast<JobType*>( &m_jobMem[ 0 ] );
@@ -448,6 +529,7 @@ public:
                 m_jobContext.submitJob( &job );
                 iJob++;
             }
+            wakeWorkers( jobCount - 1 );
 
             // put the main thread to work on emptying the job queue and then wait for all workers to finish
             waitJobs();
@@ -470,6 +552,7 @@ public:
         {
             typedef ParallelSumJob JobType;
             int jobCount = ( iterationCount + grainSize - 1 ) / grainSize;
+            m_numJobs = jobCount;
             btAssert( jobCount >= 2 );  // need more than one job for multithreading
             int jobSize = sizeof( JobType );
             int jobBufSize = jobSize * jobCount;
@@ -498,8 +581,7 @@ public:
 
             m_jobContext.clearQueue();
             // prepare worker threads for incoming work
-            setWorkersActive( true );
-            wakeWorkers();
+            prepareWorkerThreads();
             // submit all of the jobs
             int iJob = 0;
             JobType* jobs = reinterpret_cast<JobType*>( &m_jobMem[ 0 ] );
@@ -512,6 +594,7 @@ public:
                 m_jobContext.submitJob( &job );
                 iJob++;
             }
+            wakeWorkers( jobCount - 1 );
 
             // put the main thread to work on emptying the job queue and then wait for all workers to finish
             waitJobs();
