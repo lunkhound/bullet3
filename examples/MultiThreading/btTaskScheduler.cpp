@@ -155,7 +155,11 @@ public:
         BT_PROFILE( "executeJob" );
 
         // call the functor body to do the work
-        mSumArray[threadId].mSum += mBody->sumLoop( mBegin, mEnd );
+        btScalar val = mBody->sumLoop( mBegin, mEnd );
+        // by truncating bits of the result, we can make the parallelSum deterministic (at the expense of precision)
+        const float TRUNC_SCALE = float(1<<19);
+        val = floor(val*TRUNC_SCALE+0.5f)/TRUNC_SCALE;  // truncate some bits
+        mSumArray[threadId].mSum += val;
     }
 };
 
