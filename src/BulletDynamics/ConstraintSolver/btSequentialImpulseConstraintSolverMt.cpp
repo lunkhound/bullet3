@@ -52,7 +52,7 @@ struct btBatchInfo
     int numConstraints;
     int mergeIndex;
 
-    btBatchInfo() : numConstraints(0), mergeIndex(-1), phaseId(-1) {}
+    btBatchInfo(int _phaseId = -1) : numConstraints(0), mergeIndex(-1), phaseId(_phaseId) {}
 };
 
 
@@ -269,10 +269,9 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
 }
 
 
-static void mergeSmallBatches(btAlignedObjectArray<btBatchInfo>* batchArray, int iBeginBatch, int iEndBatch, int minBatchSize, int maxBatchSize)
+static void mergeSmallBatches(btBatchInfo* batches, int iBeginBatch, int iEndBatch, int minBatchSize, int maxBatchSize)
 {
     BT_PROFILE("mergeSmallBatches");
-    btAlignedObjectArray<btBatchInfo>& batches = *batchArray;
     for ( int iBatch = iEndBatch - 1; iBatch >= iBeginBatch; --iBatch )
     {
         btBatchInfo& batch = batches[ iBatch ];
@@ -317,14 +316,14 @@ static void mergeSmallBatches(btAlignedObjectArray<btBatchInfo>* batchArray, int
 }
 
 
-static void updateConstraintBatchIdsForMerges(btAlignedObjectArray<int>& constraintBatchIds, const btAlignedObjectArray<btBatchInfo>& batches)
+static void updateConstraintBatchIdsForMerges(int* constraintBatchIds, int numConstraints, const btBatchInfo* batches, int numBatches)
 {
     BT_PROFILE("updateConstraintBatchIdsForMerges");
-    int numConstraints = constraintBatchIds.size();
     // update batchIds to account for merges
     for (int i = 0; i < numConstraints; ++i)
     {
         int iBatch = constraintBatchIds[i];
+        btAssert(iBatch < numBatches);
         // if this constraint references a batch that was merged into another batch
         if (batches[iBatch].mergeIndex != kNoMerge)
         {
@@ -344,41 +343,49 @@ inline bool BatchCompare(const BatchedConstraints::Range& a, const BatchedConstr
 
 
 static void writeOutBatches(BatchedConstraints* bc,
-    const btAlignedObjectArray<int>& constraintBatchIds,
-    const btAlignedObjectArray<btBatchInfo>& batches
+    const int* constraintBatchIds,
+    int numConstraints,
+    const btBatchInfo* batches,
+    int* batchWork,
+    int maxNumBatchesPerPhase,
+    int numPhases
 )
 {
     BT_PROFILE("writeOutBatches");
     typedef BatchedConstraints::Range Range;
-    int numConstraints = constraintBatchIds.size();
     bc->m_constraintIndices.reserve( numConstraints );
     bc->m_batches.resizeNoInitialize( 0 );
     bc->m_phases.resizeNoInitialize( 0 );
 
+    int maxNumBatches = numPhases * maxNumBatchesPerPhase;
     {
-        btAlignedObjectArray<int> constraintIdPerBatch;  // for each batch, keep an index into the next available slot in the m_constraintIndices array
-        constraintIdPerBatch.resizeNoInitialize(batches.size());  // dynamic allocation
+        int* constraintIdPerBatch = batchWork;  // for each batch, keep an index into the next available slot in the m_constraintIndices array
         int iConstraint = 0;
         int curPhaseBegin = 0;
         int curPhaseId = 0;
-        for (int i = 0; i < batches.size(); ++i)
+        for (int iPhase = 0; iPhase < numPhases; ++iPhase)
         {
-            const btBatchInfo& batch = batches[i];
-            int curBatchBegin = iConstraint;
-            constraintIdPerBatch[i] = curBatchBegin;  // record the start of each batch in m_constraintIndices array
-            int numConstraints = batch.numConstraints;
-            iConstraint += numConstraints;
-            if (numConstraints > 0)
+            int iBegin = iPhase * maxNumBatchesPerPhase;
+            int iEnd = iBegin + maxNumBatchesPerPhase;
+            for ( int i = iBegin; i < iEnd; ++i )
             {
-                // if new phase is starting
-                if (batch.phaseId != curPhaseId)
+                const btBatchInfo& batch = batches[ i ];
+                int curBatchBegin = iConstraint;
+                constraintIdPerBatch[ i ] = curBatchBegin;  // record the start of each batch in m_constraintIndices array
+                int numConstraints = batch.numConstraints;
+                iConstraint += numConstraints;
+                if ( numConstraints > 0 )
                 {
-                    // output the previous phase
-                    bc->m_phases.push_back( Range( curPhaseBegin, bc->m_batches.size() ) );
-                    curPhaseBegin = bc->m_batches.size();
-                    curPhaseId = batch.phaseId;
+                    // if new phase is starting
+                    if ( batch.phaseId != curPhaseId )
+                    {
+                        // output the previous phase
+                        bc->m_phases.push_back( Range( curPhaseBegin, bc->m_batches.size() ) );
+                        curPhaseBegin = bc->m_batches.size();
+                        curPhaseId = batch.phaseId;
+                    }
+                    bc->m_batches.push_back( Range( curBatchBegin, iConstraint ) );
                 }
-                bc->m_batches.push_back( Range( curBatchBegin, iConstraint ) );
             }
         }
         if (bc->m_batches.size() > curPhaseBegin)
@@ -389,9 +396,14 @@ static void writeOutBatches(BatchedConstraints* bc,
 
         btAssert(iConstraint == numConstraints);
         bc->m_constraintIndices.resizeNoInitialize( numConstraints );
-        for ( int iCon = 0; iCon < constraintBatchIds.size(); ++iCon )
+        for ( int iCon = 0; iCon < numConstraints; ++iCon )
         {
             int iBatch = constraintBatchIds[iCon];
+            int iMergeBatch = batches[iBatch].mergeIndex;
+            if (iMergeBatch != kNoMerge)
+            {
+                iBatch = iMergeBatch;
+            }
             int iDestCon = constraintIdPerBatch[iBatch];
             constraintIdPerBatch[iBatch] = iDestCon + 1;
             bc->m_constraintIndices[iDestCon] = iCon;
@@ -490,15 +502,18 @@ void setupBatchesGreedyWithMerging(
 
         btAssert(getSumNumConstraints(batches) == (numConstraints - curConstraints.size()));
         // merge small batches into others
-        mergeSmallBatches(&batches, curPhaseBegin, batches.size(), minBatchSize, maxBatchSize);
+        mergeSmallBatches(&batches[0], curPhaseBegin, batches.size(), minBatchSize, maxBatchSize);
 
         btAssert(getSumNumConstraints(batches) == (numConstraints - curConstraints.size()));
         curPhaseId++;
     }
     // all constraints have been assigned a batchId
-    updateConstraintBatchIdsForMerges(constraintBatchIds, batches);
+    updateConstraintBatchIdsForMerges(&constraintBatchIds[0], numConstraints, &batches[0], batches.size());
 
-    writeOutBatches(batchedConstraints, constraintBatchIds, batches);
+    btAlignedObjectArray<int> batchWork;
+    batchWork.resizeNoInitialize(batches.size());
+
+    //writeOutBatches(batchedConstraints, &constraintBatchIds[0], numConstraints, &batches[0], &batchWork[0], batches.size());
     btAssert(batchedConstraints->validate(constraints, bodies));
 }
 
@@ -638,7 +653,10 @@ static void setupMtSimple(
         batches[iBatch].numConstraints++;
     }
 
-    writeOutBatches(batchedConstraints, constraintBatchIds, batches);
+    btAlignedObjectArray<int> batchWork;
+    batchWork.resizeNoInitialize(batches.size());
+
+    //writeOutBatches(batchedConstraints, &constraintBatchIds[0], numConstraints, &batches[0], &batchWork[0], batches.size());
     btAssert(batchedConstraints->validate(constraints, bodies));
 }
 
@@ -774,18 +792,21 @@ static void mergeSmallPhases(btAlignedObjectArray<int>* inoutGroupPhaseTable, in
 
 struct CreateBatchesParams
 {
-    btAlignedObjectArray<int>* constraintBatchIds;
-    btAlignedObjectArray<btBatchInfo>* batches;
-    const btAlignedObjectArray<char>* constraintPhaseIds;
+    int* constraintBatchIds;
+    btBatchInfo* batches;
+    const char* constraintPhaseIds;
     const char* phaseMappingTable;
-    const btAlignedObjectArray<int>* groupPhaseTable;
-    const btAlignedObjectArray<btBatchedConstraintInfo>* conInfos;
-    const btAlignedObjectArray<bool>* bodyDynamicFlags;
+    const int* groupPhaseTable;
+    const btBatchedConstraintInfo* conInfos;
+    const bool* bodyDynamicFlags;
+    int numBodies;
+    int numConstraints;
     int numGroups;
     int minNumBatchesPerPhase;
     int maxNumBatchesPerPhase;
     int minBatchSize;
     int maxBatchSize;
+    CreateBatchesWork* workArray;
 
     CreateBatchesParams()
     {
@@ -797,35 +818,40 @@ struct CreateBatchesParams
 static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
 {
     BT_PROFILE("createBatchesForPhase");
-    btAlignedObjectArray<int>& constraintBatchIds = *params.constraintBatchIds;
-    const btAlignedObjectArray<btBatchedConstraintInfo>& conInfos = *params.conInfos;
-    const btAlignedObjectArray<bool>& bodyDynamicFlags = *params.bodyDynamicFlags;
-    btAlignedObjectArray<btBatchInfo>& batches = *params.batches;
+    int* constraintBatchIds = params.constraintBatchIds;
+    const btBatchedConstraintInfo* conInfos = params.conInfos;
+    const bool* bodyDynamicFlags = params.bodyDynamicFlags;
+    btBatchInfo* batches = params.batches;
     const int numGroups = params.numGroups;
     const int groupMask = numGroups - 1;
     const int minNumBatchesPerPhase = params.minNumBatchesPerPhase;
     const int maxNumBatchesPerPhase = params.maxNumBatchesPerPhase;
     const int minBatchSize = params.minBatchSize;
     const int maxBatchSize = params.maxBatchSize;
-    const int numBodies = bodyDynamicFlags.size();
-    const int numConstraints = conInfos.size();
+    const int numBodies = params.numBodies;
+    const int numConstraints = params.numConstraints;
+    btAssert( numBodies > 0 );
+    btAssert( numConstraints > 0 );
 
-    btAlignedObjectArray<int> curConstraints;
+    int iThread = btGetCurrentThreadIndex();
+    CreateBatchesWork& work = params.workArray[iThread];
+
+    btAlignedObjectArray<int>& curConstraints = work.m_curConstraints;
     curConstraints.reserve(numConstraints);
 
-    btAlignedObjectArray<int> curFlexConstraints;  // flex constraints involve one non-dynamic body, so if the dynamic body is unassigned, it can be added to any batch
+    btAlignedObjectArray<int>& curFlexConstraints = work.m_curFlexConstraints;  // flex constraints involve one non-dynamic body, so if the dynamic body is unassigned, it can be added to any batch
     curFlexConstraints.reserve(numConstraints);
 
-    btAlignedObjectArray<int> bodyBatchIds;
+    btAlignedObjectArray<int>& bodyBatchIds = work.m_bodyBatchIds;
 
-    btUnionFind unionFind;
+    btUnionFind& unionFind = work.m_unionFind;
 
     unionFind.reset( numBodies );
     curConstraints.resize( 0 );
     curFlexConstraints.resize( 0 );
     if (params.constraintPhaseIds)
     {
-        const btAlignedObjectArray<char>& constraintPhaseIds = *params.constraintPhaseIds;
+        const char* constraintPhaseIds = params.constraintPhaseIds;
         const char* phaseMappingTable = params.phaseMappingTable;
         for ( int iCon = 0; iCon < numConstraints; ++iCon )
         {
@@ -851,7 +877,7 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
     }
     else if (params.groupPhaseTable)
     {
-        const btAlignedObjectArray<int>& groupPhaseTable = *params.groupPhaseTable;
+        const int* groupPhaseTable = params.groupPhaseTable;
         for ( int iCon = 0; iCon < numConstraints; ++iCon )
         {
             const btBatchedConstraintInfo& conInfo = conInfos[ iCon ];
@@ -877,6 +903,11 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
     bodyBatchIds.resize( numBodies, kUnassignedBatch );
     int iBatchBegin = iPhase * maxNumBatchesPerPhase;
     int curBatch = iBatchBegin;
+    for (int iBatch = iBatchBegin; iBatch < iBatchBegin + maxNumBatchesPerPhase; ++iBatch)
+    {
+        btBatchInfo& batch = batches[ iBatch ];
+        batch = btBatchInfo(-1);
+    }
     for ( int iiCon = 0; iiCon < curConstraints.size(); ++iiCon )
     {
         int iCon = curConstraints[ iiCon ];
@@ -918,7 +949,7 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
             curFlexConstraints.pop_back();
         }
     }
-    mergeSmallBatches( &batches, iBatchBegin, curBatch, minBatchSize, maxBatchSize );
+    mergeSmallBatches( batches, iBatchBegin, curBatch, minBatchSize, maxBatchSize );
     // if we have leftover flex constraints,
     if ( curFlexConstraints.size() > 0 )
     {
@@ -1075,7 +1106,8 @@ static void setupMt(
     btConstraintArray* constraints,
     const btAlignedObjectArray<btSolverBody>& bodies,
     int minBatchSize,
-    int maxBatchSize
+    int maxBatchSize,
+    CreateBatchesWork* workArray
     )
 {
     BT_PROFILE("setupMt");
@@ -1105,16 +1137,19 @@ static void setupMt(
     constraintBatchIds.resize(numConstraints, kUnassignedBatch);
 
     CreateBatchesParams params;
-    params.constraintBatchIds = &constraintBatchIds;
-    params.batches = &batches;
-    params.bodyDynamicFlags = &bodyDynamicFlags;
-    params.conInfos = &conInfos;
-    params.groupPhaseTable = &groupPhaseTable;
+    params.constraintBatchIds = &constraintBatchIds[0];
+    params.batches = &batches[0];
+    params.bodyDynamicFlags = &bodyDynamicFlags[0];
+    params.conInfos = &conInfos[0];
+    params.groupPhaseTable = &groupPhaseTable[0];
     params.numGroups = numGroups;
+    params.numBodies = bodies.size();
+    params.numConstraints = numConstraints;
     params.minNumBatchesPerPhase = minNumBatchesPerPhase;
     params.maxNumBatchesPerPhase = maxNumBatchesPerPhase;
     params.minBatchSize = minBatchSize;
     params.maxBatchSize = maxBatchSize;
+    params.workArray = workArray;
 
     if (true)
     {
@@ -1131,9 +1166,12 @@ static void setupMt(
         }
     }
     // all constraints have been assigned a batchId
-    updateConstraintBatchIdsForMerges(constraintBatchIds, batches);
+    updateConstraintBatchIdsForMerges(&constraintBatchIds[0], numConstraints, &batches[0], batches.size());
 
-    writeOutBatches(batchedConstraints, constraintBatchIds, batches);
+    btAlignedObjectArray<int> batchWork;
+    batchWork.resizeNoInitialize(batches.size());
+
+    writeOutBatches(batchedConstraints, &constraintBatchIds[0], numConstraints, &batches[0], &batchWork[0], maxNumBatchesPerPhase, numPhases);
     btAssert(batchedConstraints->validate(constraints, bodies));
 }
 
@@ -1240,23 +1278,23 @@ struct AssignConstraintsToPhasesParams
     btBatchedConstraintInfo* conInfos;
     const btSolverConstraint* constraints;
     const btVector3* bodyPositions;
-    const btVector3* axes;
     int numAxes;
     char* constraintPhaseIds;
+    int* constraintBatchIds;
 
     AssignConstraintsToPhasesParams(char* _constraintPhaseIds,
+        int* _constraintBatchIds,
         btBatchedConstraintInfo* _conInfos,
         const btSolverConstraint* _constraints,
         const CubeMap* _cubeMap,
         const btVector3* _bodyPositions,
-        int _numAxes,
-        const btVector3* _axes
+        int _numAxes
     )
     {
         constraintPhaseIds = _constraintPhaseIds;
+        constraintBatchIds = _constraintBatchIds;
         conInfos = _conInfos;
         constraints = _constraints;
-        axes = _axes;
         numAxes = _numAxes;
         cubeMap = _cubeMap;
         bodyPositions = _bodyPositions;
@@ -1267,7 +1305,6 @@ struct AssignConstraintsToPhasesParams
 static void assignConstraintsToPhases(const AssignConstraintsToPhasesParams& params, int begin, int end)
 {
     BT_PROFILE("assignConstraintsToPhases");
-    const bool useCubeMap = true;
     int cubeMapSize = CubeMap::N;
     int numPhases = params.numAxes*2;
     for (int iCon = begin; iCon < end; ++iCon)
@@ -1281,34 +1318,16 @@ static void assignConstraintsToPhases(const AssignConstraintsToPhasesParams& par
         btVector3 v = params.bodyPositions[body1] - params.bodyPositions[body0];
         btVector3 vDir = v.normalized();
 
-        int axis = 0;
-        if (useCubeMap)
-        {
-            btVector3 uv = normalizedDirectionToCubeUv( vDir );
-            int ix = int(uv.x() * cubeMapSize);
-            int iy = int(uv.y() * cubeMapSize);
-            axis = params.cubeMap->data[iy][ix];
-            btAssert(axis >= 0 && axis < params.numAxes);
-        }
-        else
-        {
-            float bestDot = 0.0f;
-            int numAxes = params.numAxes;
-            for ( int i = 0; i < numAxes; ++i )
-            {
-                float dot = btFabs( vDir.dot( params.axes[ i ] ) );
-                if ( dot > bestDot )
-                {
-                    bestDot = dot;
-                    axis = i;
-                }
-            }
-        }
-        //btVector3 vAbsDir = vDir.absolute();
-        //int axis = vAbsDir.maxAxis();
+        btVector3 uv = normalizedDirectionToCubeUv( vDir );
+        int ix = int( uv.x() * cubeMapSize );
+        int iy = int( uv.y() * cubeMapSize );
+        int axis = params.cubeMap->data[ iy ][ ix ];
+        btAssert( axis >= 0 && axis < params.numAxes );
+
         int iPhase = axis*2 + ((body0)&1);
         btAssert(iPhase >= 0 && iPhase < numPhases);
         params.constraintPhaseIds[iCon] = iPhase;
+        params.constraintBatchIds[iCon] = -1;
     }
 }
 
@@ -1408,6 +1427,52 @@ static int makePhaseRemappingTable(char* phaseMappingTable, int* numConstraintsP
 }
 
 
+template <int N>
+class PreallocatedMemoryHelper
+{
+    struct Chunk
+    {
+        void** ptr;
+        size_t size;
+    };
+    Chunk m_chunks[N];
+    int m_numChunks;
+public:
+    PreallocatedMemoryHelper() {m_numChunks=0;}
+    void addChunk( void** ptr, size_t sz )
+    {
+        btAssert( m_numChunks < N );
+        if ( m_numChunks < N )
+        {
+            Chunk& chunk = m_chunks[ m_numChunks ];
+            chunk.ptr = ptr;
+            chunk.size = sz;
+            m_numChunks++;
+        }
+    }
+    size_t getSizeToAllocate() const
+    {
+        size_t totalSize = 0;
+        for (int i = 0; i < m_numChunks; ++i)
+        {
+            totalSize += m_chunks[i].size;
+        }
+        return totalSize;
+    }
+    void setChunkPointers(void* mem) const
+    {
+        size_t totalSize = 0;
+        for (int i = 0; i < m_numChunks; ++i)
+        {
+            const Chunk& chunk = m_chunks[ i ];
+            char* chunkPtr = static_cast<char*>(mem) + totalSize;
+            *chunk.ptr = chunkPtr;
+            totalSize += chunk.size;
+        }
+    }
+};
+
+
 //
 // setupMt2 -- we want a way to ensure that a single batch does not get too large
 //
@@ -1449,10 +1514,12 @@ static int makePhaseRemappingTable(char* phaseMappingTable, int* numConstraintsP
 //
 static void setupMt2(
     BatchedConstraints* batchedConstraints,
+    btAlignedObjectArray<char>* scratchMemory,
     btConstraintArray* constraints,
     const btAlignedObjectArray<btSolverBody>& bodies,
     int minBatchSize,
-    int maxBatchSize
+    int maxBatchSize,
+    CreateBatchesWork* workArray
     )
 {
     BT_PROFILE("setupMt2");
@@ -1476,48 +1543,67 @@ static void setupMt2(
         btVector3(-1,-1,1),
     };
     const int numAxes = sizeof(axes)/sizeof(axes[0]);
-    for (int i = 0; i < numAxes; ++i)
-    {
-        axes[i].normalize();
-    }
-
     const bool useCubeMap = true;
     static CubeMap cubeMap;
     const int cubeMapSize = CubeMap::N;
     static bool builtCubeMap = false;
     if (!builtCubeMap)
     {
+        for ( int i = 0; i < numAxes; ++i )
+        {
+            axes[ i ].normalize();
+        }
+
         cubeMap.buildCubeMapLookupFromAxes(axes, numAxes);
         builtCubeMap = true;
     }
 
     const int numPhases = numAxes*2;
-    btAlignedObjectArray<btVector3> bodyPositions;
-    bodyPositions.resizeNoInitialize(bodies.size());
-    for (int i = 0; i < bodies.size(); ++i)
-    {
-        bodyPositions[i] = bodies[i].getWorldTransform().getOrigin();
-    }
     int numConstraints = constraints->size();
 
     int maxNumBatchesPerPhase = bodies.size();
     int minNumBatchesPerPhase = 16;
+    int maxNumBatches = maxNumBatchesPerPhase * numPhases;
 
-    btAlignedObjectArray<btBatchInfo> batches;
-    batches.resize(maxNumBatchesPerPhase * numPhases);
+    btVector3* bodyPositions = NULL;
+    bool* bodyDynamicFlags = NULL;
+    btBatchInfo* batches = NULL;
+    int* batchWork = NULL;
+    btBatchedConstraintInfo* conInfos = NULL;
+    char* constraintPhaseIds = NULL;
+    int* constraintBatchIds = NULL;
+    {
+        PreallocatedMemoryHelper<7> memHelper;
+        memHelper.addChunk( (void**) &bodyPositions, sizeof( btVector3 ) * bodies.size() );
+        memHelper.addChunk( (void**) &bodyDynamicFlags, sizeof( bool ) * bodies.size() );
+        memHelper.addChunk( (void**) &batches, sizeof( btBatchInfo )* maxNumBatches );
+        memHelper.addChunk( (void**) &batchWork, sizeof( int )* maxNumBatches );
+        memHelper.addChunk( (void**) &conInfos, sizeof( btBatchedConstraintInfo ) * numConstraints );
+        memHelper.addChunk( (void**) &constraintPhaseIds, sizeof( char ) * numConstraints );
+        memHelper.addChunk( (void**) &constraintBatchIds, sizeof( int ) * numConstraints );
+        size_t scratchSize = memHelper.getSizeToAllocate();
+        scratchMemory->resizeNoInitialize( scratchSize );
+        char* memPtr = &scratchMemory->at(0);
+        memHelper.setChunkPointers( memPtr );
+    }
+    //bodyDynamicFlags.resizeNoInitialize(bodies.size());
 
-    btAlignedObjectArray<btBatchedConstraintInfo> conInfos;
-    conInfos.resizeNoInitialize(numConstraints);
-    //initBatchedConstraintInfo(&conInfos, constraints);
+    for (int i = 0; i < bodies.size(); ++i)
+    {
+        const btSolverBody& body = bodies[i];
+        bodyPositions[i] = body.getWorldTransform().getOrigin();
+        bodyDynamicFlags[i] = ( body.internalGetInvMass().x() > btScalar( 0 ) );
+    }
 
-    btAlignedObjectArray<bool> bodyDynamicFlags;
-    initBatchedBodyDynamicFlags(&bodyDynamicFlags, bodies);
-
-    btAlignedObjectArray<char> constraintPhaseIds;
-    constraintPhaseIds.resizeNoInitialize(numConstraints);
-
-    btAlignedObjectArray<int> constraintBatchIds;
-    constraintBatchIds.resize(numConstraints, kUnassignedBatch);
+    //for (int i = 0; i < numConstraints; ++i)
+    //{
+    //    constraintBatchIds[i] = -1;
+    //}
+    //for (int i = 0; i < maxNumBatches; ++i)
+    //{
+    //    btBatchInfo& batch = batches[i];
+    //    batch = btBatchInfo();
+    //}
 
     int numConstraintsPerPhase[numPhases];
     for (int i = 0; i < numPhases; ++i)
@@ -1527,7 +1613,14 @@ static void setupMt2(
 
     bool assignInParallel = true;
     {
-        AssignConstraintsToPhasesParams params( &constraintPhaseIds[ 0 ], &conInfos[ 0 ], &constraints->at(0), &cubeMap, &bodyPositions[ 0 ], numAxes, &axes[ 0 ] );
+        AssignConstraintsToPhasesParams params( &constraintPhaseIds[ 0 ],
+            constraintBatchIds,
+            &conInfos[ 0 ],
+            &constraints->at(0),
+            &cubeMap,
+            &bodyPositions[ 0 ],
+            numAxes
+        );
         if ( assignInParallel )
         {
             AssignConstraintsToPhasesLoop loop( params );
@@ -1548,18 +1641,21 @@ static void setupMt2(
     int numActualPhases = makePhaseRemappingTable(phaseMappingTable, numConstraintsPerPhase, numPhases);
 
     CreateBatchesParams params;
-    params.constraintBatchIds = &constraintBatchIds;
-    params.batches = &batches;
-    params.bodyDynamicFlags = &bodyDynamicFlags;
-    params.conInfos = &conInfos;
+    params.constraintBatchIds = &constraintBatchIds[0];
+    params.batches = &batches[0];
+    params.bodyDynamicFlags = &bodyDynamicFlags[0];
+    params.conInfos = &conInfos[0];
     params.groupPhaseTable = NULL;
-    params.constraintPhaseIds = &constraintPhaseIds;
+    params.constraintPhaseIds = &constraintPhaseIds[0];
     params.phaseMappingTable = phaseMappingTable;
+    params.numBodies = bodies.size();
+    params.numConstraints = numConstraints;
     params.numGroups = numPhases;
     params.minNumBatchesPerPhase = minNumBatchesPerPhase;
     params.maxNumBatchesPerPhase = maxNumBatchesPerPhase;
     params.minBatchSize = minBatchSize;
     params.maxBatchSize = maxBatchSize;
+    params.workArray = workArray;
 
     if (true)
     {
@@ -1576,9 +1672,9 @@ static void setupMt2(
         }
     }
     // all constraints have been assigned a batchId
-    updateConstraintBatchIdsForMerges(constraintBatchIds, batches);
+    //updateConstraintBatchIdsForMerges(constraintBatchIds, numConstraints, batches, maxNumBatches);
 
-    writeOutBatches(batchedConstraints, constraintBatchIds, batches);
+    writeOutBatches(batchedConstraints, constraintBatchIds, numConstraints, batches, batchWork, maxNumBatchesPerPhase, numActualPhases);
     btAssert(batchedConstraints->validate(constraints, bodies));
 }
 
@@ -1614,12 +1710,14 @@ void BatchedConstraints::setup(
     btConstraintArray* constraints,
     const btAlignedObjectArray<btSolverBody>& bodies,
     int minBatchSize,
-    int maxBatchSize
+    int maxBatchSize,
+    btAlignedObjectArray<char>* scratchMemory,
+    CreateBatchesWork* workArray
     )
 {
     if (constraints->size() >= 200)
     {
-        setupMt2( this, constraints, bodies, minBatchSize, maxBatchSize );
+        setupMt2( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, workArray );
         //setupBatchesGreedyWithMerging(this, constraints, bodies, minBatchSize, maxBatchSize);
     }
     else
@@ -1645,14 +1743,14 @@ btSequentialImpulseConstraintSolverMt::~btSequentialImpulseConstraintSolverMt()
 void btSequentialImpulseConstraintSolverMt::setupBatchedContactConstraints()
 {
     BT_PROFILE("setupBatchedContactConstraints");
-    m_batchedContactConstraints.setup( &m_tmpSolverContactConstraintPool, m_tmpSolverBodyPool, sMinBatchSize, sMaxBatchSize );
+    m_batchedContactConstraints.setup( &m_tmpSolverContactConstraintPool, m_tmpSolverBodyPool, sMinBatchSize, sMaxBatchSize, &m_scratchMemory, m_createBatchesWorkArray );
 }
 
 
 void btSequentialImpulseConstraintSolverMt::setupBatchedJointConstraints()
 {
     BT_PROFILE("setupBatchedJointConstraints");
-    m_batchedJointConstraints.setup( &m_tmpSolverNonContactConstraintPool, m_tmpSolverBodyPool, sMinBatchSize, sMaxBatchSize );
+    m_batchedJointConstraints.setup( &m_tmpSolverNonContactConstraintPool, m_tmpSolverBodyPool, sMinBatchSize, sMaxBatchSize, &m_scratchMemory, m_createBatchesWorkArray );
 }
 
 

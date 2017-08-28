@@ -18,6 +18,17 @@ subject to the following restrictions:
 
 #include "btSequentialImpulseConstraintSolver.h"
 #include "LinearMath/btThreads.h"
+#include "BulletCollision/CollisionDispatch/btUnionFind.h"
+
+
+struct CreateBatchesWork
+{
+    // temp data
+    btAlignedObjectArray<int> m_curConstraints;
+    btAlignedObjectArray<int> m_curFlexConstraints;
+    btAlignedObjectArray<int> m_bodyBatchIds;
+    btUnionFind m_unionFind;
+};
 
 
 struct BatchedConstraints
@@ -37,9 +48,16 @@ struct BatchedConstraints
     btAlignedObjectArray<int> m_phaseOrder;  // phases can be done in any order, so we can randomize the order here
 
     BatchedConstraints() {}
-    void setup( btConstraintArray* constraints, const btAlignedObjectArray<btSolverBody>& bodies, int minBatchSize, int maxBatchSize );
+    void setup( btConstraintArray* constraints,
+        const btAlignedObjectArray<btSolverBody>& bodies,
+        int minBatchSize,
+        int maxBatchSize,
+        btAlignedObjectArray<char>* scratchMemory,
+        CreateBatchesWork* workArray
+    );
     bool validate( btConstraintArray* constraints, const btAlignedObjectArray<btSolverBody>& bodies ) const;
 };
+
 
 
 ///
@@ -94,6 +112,7 @@ public:
         bool contactHasRollingFriction[ MAX_NUM_CONTACT_POINTS ];
         btManifoldPoint* contactPoints[ MAX_NUM_CONTACT_POINTS ];
     };
+
     // parameters to control batching
     static bool sAllowNestedParallelForLoops;
     static int sMinimumContactManifoldsForBatching;
@@ -111,6 +130,8 @@ protected:
     btSpinMutex m_bodySolverArrayMutex;
     char m_antiFalseSharingPadding[64]; // padding to keep mutexes in separate cachelines
     btSpinMutex m_kinematicBodyUniqueIdToSolverBodyTableMutex;
+    btAlignedObjectArray<char> m_scratchMemory;
+    CreateBatchesWork m_createBatchesWorkArray[BT_MAX_THREAD_COUNT];
 
     virtual void randomizeConstraintOrdering( int iteration, int numIterations );
     virtual btScalar resolveAllJointConstraints( int iteration );
