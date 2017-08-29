@@ -334,6 +334,35 @@ static void updateConstraintBatchIdsForMerges(int* constraintBatchIds, int numCo
 }
 
 
+struct UpdateConstraintBatchIdsForMergesLoop : public btIParallelForBody
+{
+    int* m_constraintBatchIds;
+    const btBatchInfo* m_batches;
+    int m_numBatches;
+
+    UpdateConstraintBatchIdsForMergesLoop( int* constraintBatchIds, const btBatchInfo* batches, int numBatches )
+    {
+        m_constraintBatchIds = constraintBatchIds;
+        m_batches = batches;
+        m_numBatches = numBatches;
+    }
+    void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
+    {
+        BT_PROFILE( "UpdateConstraintBatchIdsForMergesLoop" );
+        updateConstraintBatchIdsForMerges( m_constraintBatchIds + iBegin, iEnd - iBegin, m_batches, m_numBatches );
+    }
+};
+
+
+static void updateConstraintBatchIdsForMergesMt(int* constraintBatchIds, int numConstraints, const btBatchInfo* batches, int numBatches)
+{
+    BT_PROFILE( "updateConstraintBatchIdsForMergesMt" );
+    UpdateConstraintBatchIdsForMergesLoop loop(constraintBatchIds, batches, numBatches);
+    int grainSize = 800;
+    btParallelFor(0, numConstraints, grainSize, loop);
+}
+
+
 inline bool BatchCompare(const BatchedConstraints::Range& a, const BatchedConstraints::Range& b)
 {
     int lenA = a.end - a.begin;
@@ -399,11 +428,11 @@ static void writeOutBatches(BatchedConstraints* bc,
         for ( int iCon = 0; iCon < numConstraints; ++iCon )
         {
             int iBatch = constraintBatchIds[iCon];
-            int iMergeBatch = batches[iBatch].mergeIndex;
-            if (iMergeBatch != kNoMerge)
-            {
-                iBatch = iMergeBatch;
-            }
+            //int iMergeBatch = batches[iBatch].mergeIndex;
+            //if (iMergeBatch != kNoMerge)
+            //{
+            //    iBatch = iMergeBatch;
+            //}
             int iDestCon = constraintIdPerBatch[iBatch];
             constraintIdPerBatch[iBatch] = iDestCon + 1;
             bc->m_constraintIndices[iDestCon] = iCon;
@@ -508,7 +537,7 @@ void setupBatchesGreedyWithMerging(
         curPhaseId++;
     }
     // all constraints have been assigned a batchId
-    updateConstraintBatchIdsForMerges(&constraintBatchIds[0], numConstraints, &batches[0], batches.size());
+    updateConstraintBatchIdsForMergesMt(&constraintBatchIds[0], numConstraints, &batches[0], batches.size());
 
     btAlignedObjectArray<int> batchWork;
     batchWork.resizeNoInitialize(batches.size());
@@ -1166,7 +1195,7 @@ static void setupMt(
         }
     }
     // all constraints have been assigned a batchId
-    updateConstraintBatchIdsForMerges(&constraintBatchIds[0], numConstraints, &batches[0], batches.size());
+    updateConstraintBatchIdsForMergesMt(&constraintBatchIds[0], numConstraints, &batches[0], batches.size());
 
     btAlignedObjectArray<int> batchWork;
     batchWork.resizeNoInitialize(batches.size());
@@ -1672,7 +1701,7 @@ static void setupMt2(
         }
     }
     // all constraints have been assigned a batchId
-    //updateConstraintBatchIdsForMerges(constraintBatchIds, numConstraints, batches, maxNumBatches);
+    updateConstraintBatchIdsForMergesMt(constraintBatchIds, numConstraints, batches, maxNumBatches);
 
     writeOutBatches(batchedConstraints, constraintBatchIds, numConstraints, batches, batchWork, maxNumBatchesPerPhase, numActualPhases);
     btAssert(batchedConstraints->validate(constraints, bodies));
