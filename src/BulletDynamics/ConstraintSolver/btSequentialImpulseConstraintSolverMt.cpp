@@ -159,6 +159,9 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
     bodyBatchIds.resize( 0 );
     bodyBatchIds.resize( numBodies, kUnassignedBatch );
 
+    btAlignedObjectArray<bool> bodyConnectivityFlags;
+    bodyConnectivityFlags.resize( numBodies, false );
+
     // for each unassigned constraint,
     for ( int iiCon = curConstraints.size() - 1; iiCon >= 0; --iiCon )
     {
@@ -167,10 +170,12 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         btAssert( constraintBatchIds[iCon] == kUnassignedBatch );
         int batchIds[ 2 ] = { kUnassignedBatch, kUnassignedBatch };
         bool isDynamic[ 2 ];
+        bool isConnected[ 2 ];
         for ( int iiBody = 0; iiBody < 2; ++iiBody )
         {
             int iBody = conInfo.bodyIds[ iiBody ];
             isDynamic[ iiBody ] = bodyDynamicFlags[iBody];
+            isConnected[ iiBody ] = bodyConnectivityFlags[ iBody ];
             if ( isDynamic[ iiBody ] )
             {
                 int iBatch = bodyBatchIds[iBody];
@@ -200,7 +205,10 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         else if ( batchIds[ 0 ] == kUnassignedBatch )
         {
             // one is unassigned, the other not
-            assignBatchId = batchIds[ 1 ];
+            if (!isConnected[ 1 ])
+            {
+                assignBatchId = batchIds[ 1 ];
+            }
             if ( isDynamic[ 0 ] )
             {
                 numBodiesToBeAdded = 1;
@@ -209,7 +217,10 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         else if ( batchIds[ 1 ] == kUnassignedBatch )
         {
             // one is unassigned, the other not
-            assignBatchId = batchIds[ 0 ];
+            if (!isConnected[ 0 ])
+            {
+                assignBatchId = batchIds[ 0 ];
+            }
             if ( isDynamic[ 1 ] )
             {
                 numBodiesToBeAdded = 1;
@@ -219,7 +230,7 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         {
             // both bodies in same batch already
             // if it won't make us exceed max batch size,
-            if ( batches[ batchIds[ 0 ] ].numConstraints < maxBatchSize )
+            //if ( batches[ batchIds[ 0 ] ].numConstraints < maxBatchSize )
             {
                 assignBatchId = batchIds[ 0 ];
             }
@@ -227,11 +238,18 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         else if ( allowMerging )
         {
             // bodies already assigned to different batches
+            btAssert(isDynamic[0] && isDynamic[1]);
             // we could either merge batches, or postpone until next phase
             int batch0Size = batches[ batchIds[ 0 ] ].numConstraints;
             int batch1Size = batches[ batchIds[ 1 ] ].numConstraints;
+            bool canMerge = true;
+            if (isConnected[0] || isConnected[1])
+            {
+                canMerge = false;
+            }
+
             btAssert( batches[ batchIds[ 0 ] ].phaseId == batches[ batchIds[ 1 ] ].phaseId );
-            if ( batch0Size < minBatchSize && batch1Size < minBatchSize && ( batch0Size + batch1Size ) < maxBatchSize )
+            if ( canMerge && batch0Size < minBatchSize && batch1Size < minBatchSize && ( batch0Size + batch1Size ) < maxBatchSize )
             {
                 // merge higher index batch into lower index batch
                 assignBatchId = btMin( batchIds[ 0 ], batchIds[ 1 ] );
@@ -258,10 +276,21 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
             // make sure bodies are assigned
             for ( int iiBody = 0; iiBody < 2; ++iiBody )
             {
-                if ( isDynamic[ iiBody ] && batchIds[ iiBody ] != assignBatchId )
+                if ( isDynamic[ iiBody ] )
                 {
                     int iBody = conInfo.bodyIds[ iiBody ];
-                    bodyBatchIds[ iBody ] = assignBatchId;
+                    if (batchIds[ iiBody ] == assignBatchId)
+                    {
+                        if (numBodiesToBeAdded > 0)
+                        {
+                            // prevent this body from causing any more bodies to be added this phase
+                            bodyConnectivityFlags[iBody] = true;
+                        }
+                    }
+                    else
+                    {
+                        bodyBatchIds[ iBody ] = assignBatchId;
+                    }
                 }
             }
         }
@@ -368,6 +397,77 @@ inline bool BatchCompare(const BatchedConstraints::Range& a, const BatchedConstr
     int lenA = a.end - a.begin;
     int lenB = b.end - b.begin;
     return lenA > lenB;
+}
+
+
+static void writeOutBatchesSimple(BatchedConstraints* bc,
+    const int* constraintBatchIds,
+    int numConstraints,
+    const btBatchInfo* batches,
+    int* batchWork,
+    int numBatches
+)
+{
+    BT_PROFILE("writeOutBatchesSimple");
+    typedef BatchedConstraints::Range Range;
+    bc->m_constraintIndices.reserve( numConstraints );
+    bc->m_batches.resizeNoInitialize( 0 );
+    bc->m_phases.resizeNoInitialize( 0 );
+
+    int maxNumBatches = numBatches;
+    {
+        int* constraintIdPerBatch = batchWork;  // for each batch, keep an index into the next available slot in the m_constraintIndices array
+        int iConstraint = 0;
+        int curPhaseBegin = 0;
+        int curPhaseId = 0;
+        for ( int i = 0; i < numBatches; ++i )
+        {
+            const btBatchInfo& batch = batches[ i ];
+            int curBatchBegin = iConstraint;
+            constraintIdPerBatch[ i ] = curBatchBegin;  // record the start of each batch in m_constraintIndices array
+            int numConstraints = batch.numConstraints;
+            iConstraint += numConstraints;
+            if ( numConstraints > 0 )
+            {
+                // if new phase is starting
+                if ( batch.phaseId != curPhaseId )
+                {
+                    // output the previous phase
+                    bc->m_phases.push_back( Range( curPhaseBegin, bc->m_batches.size() ) );
+                    curPhaseBegin = bc->m_batches.size();
+                    curPhaseId = batch.phaseId;
+                }
+                bc->m_batches.push_back( Range( curBatchBegin, iConstraint ) );
+            }
+        }
+        if (bc->m_batches.size() > curPhaseBegin)
+        {
+            // output last phase
+            bc->m_phases.push_back( Range( curPhaseBegin, bc->m_batches.size() ) );
+        }
+
+        btAssert(iConstraint == numConstraints);
+        bc->m_constraintIndices.resizeNoInitialize( numConstraints );
+        for ( int iCon = 0; iCon < numConstraints; ++iCon )
+        {
+            int iBatch = constraintBatchIds[iCon];
+            int iDestCon = constraintIdPerBatch[iBatch];
+            constraintIdPerBatch[iBatch] = iDestCon + 1;
+            bc->m_constraintIndices[iDestCon] = iCon;
+        }
+    }
+    // for each phase
+    for (int iPhase = 0; iPhase < bc->m_phases.size(); ++iPhase)
+    {
+        // sort the batches from largest to smallest (can be helpful to some task schedulers)
+        const Range& curBatches = bc->m_phases[iPhase];
+        bc->m_batches.quickSortInternal(BatchCompare, curBatches.begin, curBatches.end-1);
+    }
+    bc->m_phaseOrder.resize(bc->m_phases.size());
+    for (int i = 0; i < bc->m_phases.size(); ++i)
+    {
+        bc->m_phaseOrder[i] = i;
+    }
 }
 
 
@@ -542,7 +642,7 @@ void setupBatchesGreedyWithMerging(
     btAlignedObjectArray<int> batchWork;
     batchWork.resizeNoInitialize(batches.size());
 
-    //writeOutBatches(batchedConstraints, &constraintBatchIds[0], numConstraints, &batches[0], &batchWork[0], batches.size());
+    writeOutBatchesSimple(batchedConstraints, &constraintBatchIds[0], numConstraints, &batches[0], &batchWork[0], batches.size());
     btAssert(batchedConstraints->validate(constraints, bodies));
 }
 
@@ -685,7 +785,7 @@ static void setupMtSimple(
     btAlignedObjectArray<int> batchWork;
     batchWork.resizeNoInitialize(batches.size());
 
-    //writeOutBatches(batchedConstraints, &constraintBatchIds[0], numConstraints, &batches[0], &batchWork[0], batches.size());
+    writeOutBatchesSimple(batchedConstraints, &constraintBatchIds[0], numConstraints, &batches[0], &batchWork[0], batches.size());
     btAssert(batchedConstraints->validate(constraints, bodies));
 }
 
@@ -1216,7 +1316,7 @@ struct FaceMap
 };
 
 
-static const FaceMap gCubeFaceMaps[ 8 ] =
+static const FaceMap gCubeFaceMaps[ 6 ] =
 {
     {0.5, 0.5, btVector3(0, 1, 0), btVector3(0,  0,  1), btVector3( 1,  0,  0)},  // face0 +X
     {0.5, 1.5, btVector3(1, 0, 0), btVector3(0,  0, -1), btVector3( 0,  1,  0)},  // face0 +Y
@@ -1267,8 +1367,47 @@ static btVector3 cubeUvToNormalizedDirection(float u, float v)
 struct CubeMap
 {
     static const int N = 32;
-    char data[6*N][N];
+    static const int NUM_AXES = 13;
+    char m_data[6*N][N];
+    btVector3 m_axes[NUM_AXES];
 
+    CubeMap()
+    {
+        btVector3 axes[] =
+        {
+            // cube face axes
+            btVector3( 1,0,0 ),
+            btVector3( 0,1,0 ),
+            btVector3( 0,0,1 ),
+            // cube edge axes
+            btVector3( 1,0,1 ),
+            btVector3( -1,0,1 ),
+            btVector3( 0,1,1 ),
+            btVector3( 0,-1,1 ),
+            btVector3( 1,1,0 ),
+            btVector3( -1,1,0 ),
+            // cube corner axes
+            btVector3( 1,1,1 ),
+            btVector3( -1,1,1 ),
+            btVector3( 1,-1,1 ),
+            btVector3( -1,-1,1 ),
+        };
+        for (int i = 0; i < NUM_AXES; ++i)
+        {
+            m_axes[i] = axes[i].normalized();
+        }
+        buildCubeMapLookupFromAxes(m_axes, NUM_AXES);
+    }
+    char lookupFromDirection(const btVector3& dir) const
+    {
+        btVector3 uv = normalizedDirectionToCubeUv( dir );
+        int ix = int( uv.x() * N );
+        int iy = int( uv.y() * N );
+        btAssert( ix >= 0 && ix < N );
+        btAssert( iy >= 0 && iy < 6*N );
+        char ret = m_data[ iy ][ ix ];
+        return ret;
+    }
     void buildCubeMapLookupFromAxes(const btVector3* axes, int numAxes)
     {
         float cubeStep = 1.0 / N;
@@ -1294,11 +1433,14 @@ struct CubeMap
                         axis = i;
                     }
                 }
-                data[ iy ][ ix ] = axis;
+                m_data[ iy ][ ix ] = axis;
             }
         }
     }
 };
+
+
+static CubeMap g_cubeMap;
 
 
 struct AssignConstraintsToPhasesParams
@@ -1334,7 +1476,6 @@ struct AssignConstraintsToPhasesParams
 static void assignConstraintsToPhases(const AssignConstraintsToPhasesParams& params, int begin, int end)
 {
     BT_PROFILE("assignConstraintsToPhases");
-    int cubeMapSize = CubeMap::N;
     int numPhases = params.numAxes*2;
     for (int iCon = begin; iCon < end; ++iCon)
     {
@@ -1347,10 +1488,7 @@ static void assignConstraintsToPhases(const AssignConstraintsToPhasesParams& par
         btVector3 v = params.bodyPositions[body1] - params.bodyPositions[body0];
         btVector3 vDir = v.normalized();
 
-        btVector3 uv = normalizedDirectionToCubeUv( vDir );
-        int ix = int( uv.x() * cubeMapSize );
-        int iy = int( uv.y() * cubeMapSize );
-        int axis = params.cubeMap->data[ iy ][ ix ];
+        int axis = params.cubeMap->lookupFromDirection(vDir);
         btAssert( axis >= 0 && axis < params.numAxes );
 
         int iPhase = axis*2 + ((body0)&1);
@@ -1396,16 +1534,20 @@ static int makePhaseRemappingTable(char* phaseMappingTable, int* numConstraintsP
     {
         if (numConstraintsPerPhase[iSrc] > 0 && numConstraintsPerPhase[iSrc] < minAllowedConstraintsPerPhase)
         {
+            btVector3 srcDir = g_cubeMap.m_axes[ iSrc >> 1 ];
             // find dest phase to merge into
             // find smallest valid phase
-            int bestCount = INT_MAX;
+            float bestScore = BT_LARGE_FLOAT;
             int iDest = 0;
             for ( int i = 0; i < numPhases; ++i )
             {
                 int n = numConstraintsPerPhase[i];
-                if (n >= minAllowedConstraintsPerPhase && n < bestCount)
+                btVector3 destDir = g_cubeMap.m_axes[ i >> 1 ];
+                float dot = fabs(srcDir.dot(destDir));
+                float score = (1.0f - dot)*float(n);
+                if (n >= minAllowedConstraintsPerPhase && n < maxConstraintsPerPhase && score < bestScore)
                 {
-                    bestCount = n;
+                    bestScore = n;
                     iDest = i;
                 }
             }
@@ -1539,8 +1681,31 @@ public:
 //    Once all constraints have been assigned to a phase we start generating batches for
 //    each phase. There is no guaranttee that we will get a decent number of batches
 //    for every phase. We could end up with a phase that has all its constraints in a
-//    single batch. However, this doesn't seem to be an issue with testing so far.
+//    single batch. This issue has come up in testing.
 //
+
+/*
+
+ New idea:
+
+ So the problem is that by greedily combining constraints into batches, we are
+ creating batches that are too large because they have too much connectivity
+ (too much like a web) in places and end up touching most of the available bodies.
+ Then there aren't enough constraints left over to form a useful number of evenly sized batches.
+
+ When building batches, only allow each body to be connected to 2 other bodies.
+ This is because we are looking to form batches that comprise a strand or filament-like
+ structure, and in a strand, each body is only connected to, at most 2 others (with the
+ bodies on the ends only connected to one other).
+ The hope is that by limiting the body connectivity, the batches will naturally
+ form into stands.
+ Recall that with contact constraints it is not unusual to have 3 or 4 of them connecting
+ the same pair of bodies, and we want to group those all in the same batch to avoid needing
+ more phases than necessary.
+ So the rule is, if a constraint comes along that would add too much connectivity, then we
+ transfer that constraint to another phase.
+
+*/
 static void setupMt2(
     BatchedConstraints* batchedConstraints,
     btAlignedObjectArray<char>* scratchMemory,
@@ -1552,40 +1717,8 @@ static void setupMt2(
     )
 {
     BT_PROFILE("setupMt2");
-    btVector3 axes[] =
-    {
-        // cube face axes
-        btVector3(1,0,0),
-        btVector3(0,1,0),
-        btVector3(0,0,1),
-        // cube edge axes
-        btVector3(1,0,1),
-        btVector3(-1,0,1),
-        btVector3(0,1,1),
-        btVector3(0,-1,1),
-        btVector3(1,1,0),
-        btVector3(-1,1,0),
-        // cube corner axes
-        btVector3(1,1,1),
-        btVector3(-1,1,1),
-        btVector3(1,-1,1),
-        btVector3(-1,-1,1),
-    };
-    const int numAxes = sizeof(axes)/sizeof(axes[0]);
-    const bool useCubeMap = true;
-    static CubeMap cubeMap;
-    const int cubeMapSize = CubeMap::N;
-    static bool builtCubeMap = false;
-    if (!builtCubeMap)
-    {
-        for ( int i = 0; i < numAxes; ++i )
-        {
-            axes[ i ].normalize();
-        }
-
-        cubeMap.buildCubeMapLookupFromAxes(axes, numAxes);
-        builtCubeMap = true;
-    }
+    const int numAxes = CubeMap::NUM_AXES;
+    const CubeMap& cubeMap = g_cubeMap;
 
     const int numPhases = numAxes*2;
     int numConstraints = constraints->size();
@@ -1746,8 +1879,8 @@ void BatchedConstraints::setup(
 {
     if (constraints->size() >= 200)
     {
-        setupMt2( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, workArray );
-        //setupBatchesGreedyWithMerging(this, constraints, bodies, minBatchSize, maxBatchSize);
+        //setupMt2( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, workArray );
+        setupBatchesGreedyWithMerging(this, constraints, bodies, minBatchSize, maxBatchSize);
     }
     else
     {
@@ -2248,7 +2381,7 @@ void btSequentialImpulseConstraintSolverMt::allocAllContactConstraints(btPersist
     BT_PROFILE( "allocAllContactConstraints" );
     btAlignedObjectArray<btContactManifoldCachedInfo> cachedInfoArray; // = m_manifoldCachedInfoArray;
     cachedInfoArray.resizeNoInitialize( numManifolds );
-    if (true)
+    if (false)
     {
         // sequential
         internalCollectContactManifoldCachedInfo(&cachedInfoArray[ 0 ], manifoldPtr, numManifolds, infoGlobal);
