@@ -584,16 +584,18 @@ void CommonRigidBodyMTBase::createDefaultParameters()
     {
         // create a button to toggle multithreaded world
         ButtonParams button( "Multithreaded world enable", 0, true );
-        button.m_initialState = gMultithreadedWorld;
-        button.m_userPointer = &gMultithreadedWorld;
+        bool* ptr = &gMultithreadedWorld;
+        button.m_initialState = *ptr;
+        button.m_userPointer = ptr;
         button.m_callback = boolPtrButtonCallback;
         m_guiHelper->getParameterInterface()->registerButtonParameter( button );
     }
     {
         // create a button to toggle profile printing
         ButtonParams button( "Display solver info", 0, true );
-        button.m_initialState = gDisplayProfileInfo;
-        button.m_userPointer = &gDisplayProfileInfo;
+        bool* ptr = &gDisplayProfileInfo;
+        button.m_initialState = *ptr;
+        button.m_userPointer = ptr;
         button.m_callback = boolPtrButtonCallback;
         m_guiHelper->getParameterInterface()->registerButtonParameter( button );
     }
@@ -758,6 +760,15 @@ void CommonRigidBodyMTBase::createDefaultParameters()
             slider.m_userPointer = NULL;
             slider.m_clampToIntegers = true;
             m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
+        }
+        {
+            // create a button to toggle debug drawing of batching visualization
+            ButtonParams button( "Visualize batching", 0, true );
+            bool* ptr = &btSequentialImpulseConstraintSolverMt::sDebugDrawBatches;
+            button.m_initialState = *ptr;
+            button.m_userPointer = ptr;
+            button.m_callback = boolPtrButtonCallback;
+            m_guiHelper->getParameterInterface()->registerButtonParameter( button );
         }
 #endif // #if BT_THREADSAFE
     }
