@@ -46,8 +46,9 @@ struct BatchedConstraints
     btAlignedObjectArray<Range> m_batches;  // each batch is a range of indices in the m_constraintIndices array
     btAlignedObjectArray<Range> m_phases;  // each phase is range of indices in the m_batches array
     btAlignedObjectArray<int> m_phaseOrder;  // phases can be done in any order, so we can randomize the order here
+    btIDebugDraw* m_debugDrawer;
 
-    BatchedConstraints() {}
+    BatchedConstraints() {m_debugDrawer=NULL;}
     void setup( btConstraintArray* constraints,
         const btAlignedObjectArray<btSolverBody>& bodies,
         int minBatchSize,
@@ -118,6 +119,8 @@ public:
     static int sMinimumContactManifoldsForBatching;
     static int sMinBatchSize;
     static int sMaxBatchSize;
+
+    static bool sDebugDrawBatches;
 
 protected:
     BatchedConstraints m_batchedContactConstraints;

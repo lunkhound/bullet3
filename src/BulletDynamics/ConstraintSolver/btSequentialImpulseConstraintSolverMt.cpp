@@ -36,6 +36,8 @@ bool btSequentialImpulseConstraintSolverMt::sAllowNestedParallelForLoops = false
 int btSequentialImpulseConstraintSolverMt::sMinimumContactManifoldsForBatching = 1500;
 int btSequentialImpulseConstraintSolverMt::sMinBatchSize = 40;
 int btSequentialImpulseConstraintSolverMt::sMaxBatchSize = 50;
+bool btSequentialImpulseConstraintSolverMt::sDebugDrawBatches = false;
+
 
 const int kUnassignedBatch = -1;
 const int kNoMerge = -1;
@@ -107,6 +109,101 @@ bool BatchedConstraints::validate(btConstraintArray* constraints, const btAligne
         }
     }
     return errors == 0;
+}
+
+
+static void debugDrawSingleBatch( const BatchedConstraints* bc,
+    btConstraintArray* constraints,
+    const btAlignedObjectArray<btSolverBody>& bodies,
+    int iBatch,
+    const btVector3& color,
+    const btVector3& offset
+    )
+{
+    if (bc && bc->m_debugDrawer && iBatch < bc->m_batches.size())
+    {
+        const BatchedConstraints::Range& b = bc->m_batches[iBatch];
+        for (int iiCon = b.begin; iiCon < b.end; ++iiCon)
+        {
+            int iCon = bc->m_constraintIndices[iiCon];
+            const btSolverConstraint& con = constraints->at(iCon);
+            int iBody0 = con.m_solverBodyIdA;
+            int iBody1 = con.m_solverBodyIdB;
+            btVector3 pos0 = bodies[iBody0].getWorldTransform().getOrigin() + offset;
+            btVector3 pos1 = bodies[iBody1].getWorldTransform().getOrigin() + offset;
+            bc->m_debugDrawer->drawLine(pos0, pos1, color);
+        }
+    }
+}
+
+
+static void debugDrawPhase( const BatchedConstraints* bc,
+    btConstraintArray* constraints,
+    const btAlignedObjectArray<btSolverBody>& bodies,
+    int iPhase,
+    const btVector3& color0,
+    const btVector3& color1,
+    const btVector3& offset
+    )
+{
+    BT_PROFILE( "debugDrawPhase" );
+    if ( bc && bc->m_debugDrawer && iPhase < bc->m_phases.size() )
+    {
+        const BatchedConstraints::Range& phase = bc->m_phases[iPhase];
+        for (int iBatch = phase.begin; iBatch < phase.end; ++iBatch)
+        {
+            float tt = float(iBatch - phase.begin) / float(btMax(1, phase.end - phase.begin - 1));
+            btVector3 col = lerp(color0, color1, tt);
+            debugDrawSingleBatch(bc, constraints, bodies, iBatch, col, offset);
+        }
+    }
+}
+
+
+static void debugDrawAllBatches( const BatchedConstraints* bc,
+    btConstraintArray* constraints,
+    const btAlignedObjectArray<btSolverBody>& bodies
+    )
+{
+    BT_PROFILE( "debugDrawAllBatches" );
+    if ( bc && bc->m_debugDrawer && bc->m_phases.size() > 0 )
+    {
+        btVector3 bboxMin(BT_LARGE_FLOAT, BT_LARGE_FLOAT, BT_LARGE_FLOAT);
+        btVector3 bboxMax = -bboxMin;
+        for (int iBody = 0; iBody < bodies.size(); ++iBody)
+        {
+            const btVector3& pos = bodies[iBody].getWorldTransform().getOrigin();
+            bboxMin.setMin(pos);
+            bboxMax.setMax(pos);
+        }
+        btVector3 bboxExtent = bboxMax - bboxMin;
+        btVector3 offsetBase = btVector3( 0, bboxExtent.y()*1.1f, 0 );
+        btVector3 offsetStep = btVector3( 0, 0, bboxExtent.z()*1.1f );
+        btVector3 colorTable[] =
+        {
+            btVector3(1,0,0),  // R
+            btVector3(0,1,0),  // G
+            btVector3(0,0,1),  // B
+            btVector3(0,1,1),  // C
+            btVector3(1,0,1),  // M
+            btVector3(1,1,0),  // Y
+            btVector3(0,1,0.7),  // bluish green
+            btVector3(1,0,0.7),  // pink
+            btVector3(1,0.7,0),  // orange
+            btVector3(0,0.7,1),  // greenish blue
+            btVector3(0.7,0,1),  // purple
+            btVector3(0.7,1,0),  // yellowish green
+        };
+        int numColors = sizeof(colorTable)/sizeof(colorTable[0]);
+        int numPhases = bc->m_phases.size();
+        for (int iPhase = 0; iPhase < numPhases; ++iPhase)
+        {
+            btVector3 color0 = colorTable[ iPhase % numColors ];
+            btVector3 color1 = color0 * 0.5;
+            btVector3 offset = offsetBase + offsetStep*(float(iPhase) - float(numPhases-1)*0.5);
+            debugDrawPhase(bc, constraints, bodies, iPhase, color0, color1, offset);
+        }
+    }
 }
 
 
@@ -486,7 +583,7 @@ static void writeOutBatches(BatchedConstraints* bc,
     bc->m_batches.resizeNoInitialize( 0 );
     bc->m_phases.resizeNoInitialize( 0 );
 
-    int maxNumBatches = numPhases * maxNumBatchesPerPhase;
+    //int maxNumBatches = numPhases * maxNumBatchesPerPhase;
     {
         int* constraintIdPerBatch = batchWork;  // for each batch, keep an index into the next available slot in the m_constraintIndices array
         int iConstraint = 0;
@@ -925,7 +1022,6 @@ struct CreateBatchesParams
     btBatchInfo* batches;
     const char* constraintPhaseIds;
     const char* phaseMappingTable;
-    const int* groupPhaseTable;
     const btBatchedConstraintInfo* conInfos;
     const bool* bodyDynamicFlags;
     int numBodies;
@@ -978,52 +1074,31 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
     unionFind.reset( numBodies );
     curConstraints.resize( 0 );
     curFlexConstraints.resize( 0 );
-    if (params.constraintPhaseIds)
+    btAssert(params.constraintPhaseIds);
     {
         const char* constraintPhaseIds = params.constraintPhaseIds;
         const char* phaseMappingTable = params.phaseMappingTable;
         for ( int iCon = 0; iCon < numConstraints; ++iCon )
         {
             char unmappedPhase = constraintPhaseIds[iCon];
-            btAssert( unmappedPhase < params.numGroups );
-            char mappedPhase = phaseMappingTable[ unmappedPhase ];
-            if ( iPhase == mappedPhase )
+            if ( unmappedPhase >= 0 )
             {
-                const btBatchedConstraintInfo& conInfo = conInfos[ iCon ];
-                int body0 = conInfo.bodyIds[ 0 ];
-                int body1 = conInfo.bodyIds[ 1 ];
-                if ( bodyDynamicFlags[ body0 ] && bodyDynamicFlags[ body1 ] )
+                btAssert( unmappedPhase < params.numGroups );
+                char mappedPhase = phaseMappingTable[ unmappedPhase ];
+                if ( iPhase == mappedPhase )
                 {
-                    unionFind.unite( body0, body1 );
-                    curConstraints.push_back( iCon );
-                }
-                else
-                {
-                    curFlexConstraints.push_back( iCon );
-                }
-            }
-        }
-    }
-    else if (params.groupPhaseTable)
-    {
-        const int* groupPhaseTable = params.groupPhaseTable;
-        for ( int iCon = 0; iCon < numConstraints; ++iCon )
-        {
-            const btBatchedConstraintInfo& conInfo = conInfos[ iCon ];
-            int body0 = conInfo.bodyIds[ 0 ];
-            int body1 = conInfo.bodyIds[ 1 ];
-            int groupA = body0 & groupMask;
-            int groupB = body1 & groupMask;
-            if ( iPhase == groupPhaseTable[ groupA + groupB*numGroups ] )
-            {
-                if ( bodyDynamicFlags[ body0 ] && bodyDynamicFlags[ body1 ] )
-                {
-                    unionFind.unite( body0, body1 );
-                    curConstraints.push_back( iCon );
-                }
-                else
-                {
-                    curFlexConstraints.push_back( iCon );
+                    const btBatchedConstraintInfo& conInfo = conInfos[ iCon ];
+                    int body0 = conInfo.bodyIds[ 0 ];
+                    int body1 = conInfo.bodyIds[ 1 ];
+                    if ( bodyDynamicFlags[ body0 ] && bodyDynamicFlags[ body1 ] )
+                    {
+                        unionFind.unite( body0, body1 );
+                        curConstraints.push_back( iCon );
+                    }
+                    else
+                    {
+                        curFlexConstraints.push_back( iCon );
+                    }
                 }
             }
         }
@@ -1223,8 +1298,8 @@ struct CreateBatchesForPhaseLoop : public btIParallelForBody
 //      - flexible constraints are then added to the smallest batches to make the batches as uniformly sized as possible
 //
 // Pros:
-//   - usually generates 8 evenly sized phases each with a good number of evenly sized batches
-//   - each of the ~8 phases is processed in parallel
+//   - usually generates 12 evenly sized phases each with a good number of evenly sized batches
+//   - each of the ~12 phases is processed in parallel
 //
 // Cons:
 //   - complicated
@@ -1242,7 +1317,7 @@ static void setupMt(
     BT_PROFILE("setupMt");
     const int numGroups = 16;
     const int groupMask = numGroups - 1;
-    int numPhases = numGroups;
+    int numPhases = numGroups + 1;
     btAlignedObjectArray<int> groupPhaseTable;
     initBatchPhaseTable(&groupPhaseTable, numGroups);
 
@@ -1265,12 +1340,32 @@ static void setupMt(
     btAlignedObjectArray<int> constraintBatchIds;
     constraintBatchIds.resize(numConstraints, kUnassignedBatch);
 
+    btAlignedObjectArray<char> constraintPhaseIds;
+    constraintPhaseIds.resizeNoInitialize(numConstraints);
+    for ( int iCon = 0; iCon < numConstraints; ++iCon )
+    {
+        const btBatchedConstraintInfo& conInfo = conInfos[ iCon ];
+        int body0 = conInfo.bodyIds[ 0 ];
+        int body1 = conInfo.bodyIds[ 1 ];
+        if (bodyDynamicFlags[body0] && bodyDynamicFlags[body1])
+        {
+            int groupA = body0 & groupMask;
+            int groupB = body1 & groupMask;
+            int iPhase = groupPhaseTable[ groupA + groupB*numGroups ];
+            constraintPhaseIds[ iCon ] = iPhase;
+        }
+        else
+        {
+            constraintPhaseIds[ iCon ] = numPhases - 1;
+        }
+    }
+
     CreateBatchesParams params;
     params.constraintBatchIds = &constraintBatchIds[0];
     params.batches = &batches[0];
     params.bodyDynamicFlags = &bodyDynamicFlags[0];
     params.conInfos = &conInfos[0];
-    params.groupPhaseTable = &groupPhaseTable[0];
+    params.constraintPhaseIds = &constraintPhaseIds[0];
     params.numGroups = numGroups;
     params.numBodies = bodies.size();
     params.numConstraints = numConstraints;
@@ -1440,6 +1535,8 @@ struct CubeMap
 };
 
 
+const int MAX_NUM_PHASES = CubeMap::NUM_AXES*2 + 1;
+
 static CubeMap g_cubeMap;
 
 
@@ -1449,6 +1546,7 @@ struct AssignConstraintsToPhasesParams
     btBatchedConstraintInfo* conInfos;
     const btSolverConstraint* constraints;
     const btVector3* bodyPositions;
+    const bool* bodyDynamicFlags;
     int numAxes;
     char* constraintPhaseIds;
     int* constraintBatchIds;
@@ -1459,6 +1557,7 @@ struct AssignConstraintsToPhasesParams
         const btSolverConstraint* _constraints,
         const CubeMap* _cubeMap,
         const btVector3* _bodyPositions,
+        const bool* _bodyDynamicFlags,
         int _numAxes
     )
     {
@@ -1469,6 +1568,7 @@ struct AssignConstraintsToPhasesParams
         numAxes = _numAxes;
         cubeMap = _cubeMap;
         bodyPositions = _bodyPositions;
+        bodyDynamicFlags = _bodyDynamicFlags;
     }
 };
 
@@ -1476,7 +1576,6 @@ struct AssignConstraintsToPhasesParams
 static void assignConstraintsToPhases(const AssignConstraintsToPhasesParams& params, int begin, int end)
 {
     BT_PROFILE("assignConstraintsToPhases");
-    int numPhases = params.numAxes*2;
     for (int iCon = begin; iCon < end; ++iCon)
     {
         btBatchedConstraintInfo& conInfo = params.conInfos[iCon];
@@ -1485,14 +1584,18 @@ static void assignConstraintsToPhases(const AssignConstraintsToPhasesParams& par
         int body1 = con.m_solverBodyIdB;
         conInfo.bodyIds[0] = body0;
         conInfo.bodyIds[1] = body1;
-        btVector3 v = params.bodyPositions[body1] - params.bodyPositions[body0];
-        btVector3 vDir = v.normalized();
+        int iPhase = MAX_NUM_PHASES - 1;
+        if ( params.bodyDynamicFlags[ body0 ] && params.bodyDynamicFlags[ body1 ] )
+        {
+            btVector3 v = params.bodyPositions[ body1 ] - params.bodyPositions[ body0 ];
+            btVector3 vDir = v.normalized();
 
-        int axis = params.cubeMap->lookupFromDirection(vDir);
-        btAssert( axis >= 0 && axis < params.numAxes );
+            int axis = params.cubeMap->lookupFromDirection( vDir );
+            btAssert( axis >= 0 && axis < params.numAxes );
 
-        int iPhase = axis*2 + ((body0)&1);
-        btAssert(iPhase >= 0 && iPhase < numPhases);
+            iPhase = axis * 2; // + ((body0)&1);
+            btAssert( iPhase >= 0 && iPhase < MAX_NUM_PHASES );
+        }
         params.constraintPhaseIds[iCon] = iPhase;
         params.constraintBatchIds[iCon] = -1;
     }
@@ -1516,13 +1619,25 @@ public:
 };
 
 
-static int makePhaseRemappingTable(char* phaseMappingTable, int* numConstraintsPerPhase, int numPhases)
+static int makePhaseRemappingTable(char* phaseMappingTable, int* numConstraintsPerPhase, int numPhases, int iFlexPhase)
 {
     BT_PROFILE("makePhaseRemappingTable");
     // join together small phases to try to create fewer more evenly-sized phases
+    btVector3 phaseAxis[ MAX_NUM_PHASES ];
     for (int i = 0; i < numPhases; ++i)
     {
         phaseMappingTable[i] = i;
+        if (i == iFlexPhase)
+        {
+            // flex phase is for constraints with 1 dynamic body -- no axis
+            phaseAxis[ i ] = btVector3(0,0,0);
+        }
+        else
+        {
+            int iAxis = i >> 1;
+            btAssert( iAxis >= 0 && iAxis < CubeMap::NUM_AXES );
+            phaseAxis[ i ] = g_cubeMap.m_axes[ iAxis ];
+        }
     }
     int maxConstraintsPerPhase = 0;
     for (int i = 0; i < numPhases; ++i)
@@ -1534,27 +1649,65 @@ static int makePhaseRemappingTable(char* phaseMappingTable, int* numConstraintsP
     {
         if (numConstraintsPerPhase[iSrc] > 0 && numConstraintsPerPhase[iSrc] < minAllowedConstraintsPerPhase)
         {
-            btVector3 srcDir = g_cubeMap.m_axes[ iSrc >> 1 ];
+            btVector3 srcDir = phaseAxis[ iSrc ];
             // find dest phase to merge into
             // find smallest valid phase
-            float bestScore = BT_LARGE_FLOAT;
+            float bestDot = 0.0f;
             int iDest = 0;
-            for ( int i = 0; i < numPhases; ++i )
+            if ( iSrc == iFlexPhase )
             {
-                int n = numConstraintsPerPhase[i];
-                btVector3 destDir = g_cubeMap.m_axes[ i >> 1 ];
-                float dot = fabs(srcDir.dot(destDir));
-                float score = (1.0f - dot)*float(n);
-                if (n >= minAllowedConstraintsPerPhase && n < maxConstraintsPerPhase && score < bestScore)
+                int bestScore = maxConstraintsPerPhase;
+                for ( int i = 0; i < numPhases; ++i )
                 {
-                    bestScore = n;
-                    iDest = i;
+                    if (i != iSrc)
+                    {
+                        int n = numConstraintsPerPhase[ i ];
+                        if ( n >= minAllowedConstraintsPerPhase && n < maxConstraintsPerPhase && n < bestScore )
+                        {
+                            bestScore = n;
+                            iDest = i;
+                        }
+                    }
+                }
+                bestDot = 1.0f;
+            }
+            else
+            {
+                float bestScore = BT_LARGE_FLOAT;
+                for ( int i = 0; i < numPhases; ++i )
+                {
+                    int n = numConstraintsPerPhase[ i ];
+                    btVector3 destDir = phaseAxis[ i ];
+                    float dot = fabs( srcDir.dot( destDir ) );
+                    float score = ( 1.0f - dot )*float( n );
+                    if ( n >= minAllowedConstraintsPerPhase && n < maxConstraintsPerPhase && score < bestScore )
+                    {
+                        bestScore = n;
+                        bestDot = dot;
+                        iDest = i;
+                    }
                 }
             }
-            // merge phases
-            numConstraintsPerPhase[iDest] += numConstraintsPerPhase[iSrc];
-            numConstraintsPerPhase[iSrc] = 0;
-            phaseMappingTable[iSrc] = iDest;
+            const float dotThresh =
+                //0.8164f;
+                //0.707f;
+                0.5773f;
+            if (bestDot >= dotThresh)
+            {
+                // merge phases
+                btVector3 srcDir = phaseAxis[ iSrc ];
+                btVector3 destDir = phaseAxis[ iDest ];
+                if (srcDir.dot(destDir) < 0.0f)
+                {
+                    srcDir = -srcDir;
+                }
+                btVector3 dir = srcDir * float( numConstraintsPerPhase[ iSrc ] ) + destDir *float( numConstraintsPerPhase[ iDest ] );
+                dir.normalize();
+                phaseAxis[ iDest ] = dir;
+                numConstraintsPerPhase[ iDest ] += numConstraintsPerPhase[ iSrc ];
+                numConstraintsPerPhase[ iSrc ] = 0;
+                phaseMappingTable[ iSrc ] = iDest;
+            }
         }
     }
     for (int iDest = 0; iDest < numPhases; ++iDest)
@@ -1645,7 +1798,7 @@ public:
 
 
 //
-// setupMt2 -- we want a way to ensure that a single batch does not get too large
+// setupDirectionalBatchesMt -- we want a way to ensure that a single batch does not get too large
 //
 // KEY IDEA: if we assign constraints to phases based on the DIRECTION vector between
 //    the 2 bodies of the constraint, then that would tend to limit how large a
@@ -1706,7 +1859,7 @@ public:
  transfer that constraint to another phase.
 
 */
-static void setupMt2(
+static void setupDirectionalBatchesMt(
     BatchedConstraints* batchedConstraints,
     btAlignedObjectArray<char>* scratchMemory,
     btConstraintArray* constraints,
@@ -1716,11 +1869,11 @@ static void setupMt2(
     CreateBatchesWork* workArray
     )
 {
-    BT_PROFILE("setupMt2");
+    BT_PROFILE("setupDirectionalBatchesMt");
     const int numAxes = CubeMap::NUM_AXES;
     const CubeMap& cubeMap = g_cubeMap;
 
-    const int numPhases = numAxes*2;
+    const int numPhases = MAX_NUM_PHASES;
     int numConstraints = constraints->size();
 
     int maxNumBatchesPerPhase = bodies.size();
@@ -1781,6 +1934,7 @@ static void setupMt2(
             &constraints->at(0),
             &cubeMap,
             &bodyPositions[ 0 ],
+            &bodyDynamicFlags[ 0 ],
             numAxes
         );
         if ( assignInParallel )
@@ -1800,14 +1954,13 @@ static void setupMt2(
         numConstraintsPerPhase[iPhase]++;
     }
     char phaseMappingTable[numPhases];
-    int numActualPhases = makePhaseRemappingTable(phaseMappingTable, numConstraintsPerPhase, numPhases);
+    int numActualPhases = makePhaseRemappingTable(phaseMappingTable, numConstraintsPerPhase, numPhases, MAX_NUM_PHASES-1);
 
     CreateBatchesParams params;
     params.constraintBatchIds = &constraintBatchIds[0];
     params.batches = &batches[0];
     params.bodyDynamicFlags = &bodyDynamicFlags[0];
     params.conInfos = &conInfos[0];
-    params.groupPhaseTable = NULL;
     params.constraintPhaseIds = &constraintPhaseIds[0];
     params.phaseMappingTable = phaseMappingTable;
     params.numBodies = bodies.size();
@@ -1879,8 +2032,12 @@ void BatchedConstraints::setup(
 {
     if (constraints->size() >= 200)
     {
-        //setupMt2( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, workArray );
-        setupBatchesGreedyWithMerging(this, constraints, bodies, minBatchSize, maxBatchSize);
+        setupDirectionalBatchesMt( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, workArray );
+        //setupBatchesGreedyWithMerging(this, constraints, bodies, minBatchSize, maxBatchSize);
+        if (btSequentialImpulseConstraintSolverMt::sDebugDrawBatches)
+        {
+            debugDrawAllBatches( this, constraints, bodies );
+        }
     }
     else
     {
@@ -2469,6 +2626,8 @@ btScalar btSequentialImpulseConstraintSolverMt::solveGroupCacheFriendlySetup(
         )
     {
         m_useBatching = true;
+        m_batchedContactConstraints.m_debugDrawer = debugDrawer;
+        m_batchedJointConstraints.m_debugDrawer = debugDrawer;
     }
     btSequentialImpulseConstraintSolver::solveGroupCacheFriendlySetup( bodies,
                                                                        numBodies,
@@ -2922,7 +3081,7 @@ btScalar btSequentialImpulseConstraintSolverMt::resolveAllContactConstraints()
     {
         int iPhase = batchedCons.m_phaseOrder[ iiPhase ];
         const BatchedConstraints::Range& phase = batchedCons.m_phases[ iPhase ];
-        int grainSize = 2;
+        int grainSize = 1;
         leastSquaresResidual += btParallelSum( phase.begin, phase.end, grainSize, loop );
     }
     return leastSquaresResidual;
@@ -2963,7 +3122,7 @@ btScalar btSequentialImpulseConstraintSolverMt::resolveAllContactFrictionConstra
     {
         int iPhase = batchedCons.m_phaseOrder[ iiPhase ];
         const BatchedConstraints::Range& phase = batchedCons.m_phases[ iPhase ];
-        int grainSize = 2;
+        int grainSize = 1;
         leastSquaresResidual += btParallelSum( phase.begin, phase.end, grainSize, loop );
     }
     return leastSquaresResidual;
