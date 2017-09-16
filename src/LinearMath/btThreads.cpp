@@ -658,10 +658,7 @@ public:
         BT_PROFILE( "parallelSum_TBB" );
         SumBodyAdapter tbbBody( &body );
         btPushThreadsAreRunning();
-        tbb::parallel_reduce( tbb::blocked_range<int>( iBegin, iEnd, grainSize ),
-            tbbBody,
-            tbb::simple_partitioner()
-        );
+        tbb::parallel_deterministic_reduce( tbb::blocked_range<int>( iBegin, iEnd, grainSize ), tbbBody );
         btPopThreadsAreRunning();
         return tbbBody.mSum;
     }
