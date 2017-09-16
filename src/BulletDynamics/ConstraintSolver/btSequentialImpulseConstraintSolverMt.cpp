@@ -1809,10 +1809,9 @@ public:
 //    north/south and constraints east/west.
 //
 //    We'd need to quantize the direction vector somehow, and bin the constraints.
-//    It may be useful to compute the bounding box of the body positions.
 //
 //    We pre-generate a small cubemap, which we can use to map from the direction
-//    vector between bodies.
+//    vector between bodies to initial phase index.
 //    Imagine a cube centered at the origin.
 //    For each of the 6 faces, we have a direction from the origin to the center of
 //    each face.
