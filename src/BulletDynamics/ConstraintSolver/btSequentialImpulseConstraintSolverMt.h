@@ -17,49 +17,8 @@ subject to the following restrictions:
 #define BT_SEQUENTIAL_IMPULSE_CONSTRAINT_SOLVER_MT_H
 
 #include "btSequentialImpulseConstraintSolver.h"
+#include "btBatchedConstraints.h"
 #include "LinearMath/btThreads.h"
-#include "BulletCollision/CollisionDispatch/btUnionFind.h"
-
-
-struct CreateBatchesWork
-{
-    // temp data
-    btAlignedObjectArray<int> m_curConstraints;
-    btAlignedObjectArray<int> m_curFlexConstraints;
-    btAlignedObjectArray<int> m_bodyBatchIds;
-    btUnionFind m_unionFind;
-};
-
-
-struct BatchedConstraints
-{
-    struct Range
-    {
-        int begin;
-        int end;
-
-        Range() : begin( 0 ), end( 0 ) {}
-        Range( int _beg, int _end ) : begin( _beg ), end( _end ) {}
-    };
-
-    btAlignedObjectArray<int> m_constraintIndices;
-    btAlignedObjectArray<Range> m_batches;  // each batch is a range of indices in the m_constraintIndices array
-    btAlignedObjectArray<Range> m_phases;  // each phase is range of indices in the m_batches array
-    btAlignedObjectArray<int> m_phaseOrder;  // phases can be done in any order, so we can randomize the order here
-    btIDebugDraw* m_debugDrawer;
-
-    BatchedConstraints() {m_debugDrawer=NULL;}
-    void setup( btConstraintArray* constraints,
-        const btAlignedObjectArray<btSolverBody>& bodies,
-        int minBatchSize,
-        int maxBatchSize,
-        btAlignedObjectArray<char>* scratchMemory,
-        CreateBatchesWork* workArray
-    );
-    bool validate( btConstraintArray* constraints, const btAlignedObjectArray<btSolverBody>& bodies ) const;
-};
-
-
 
 ///
 /// btSequentialImpulseConstraintSolverMt
@@ -90,7 +49,9 @@ struct BatchedConstraints
 ///  This is to avoid regenerating the batches for each solver iteration which would be quite costly in performance.
 ///
 ///  Note that a non-zero leastSquaresResidualThreshold could possibly affect the determinism of the simulation
-///  because floating point addition is not associative due to rounding error.
+///  if the task scheduler's parallelSum operation is non-deterministic. The parallelSum operation can be non-deterministic
+///  because floating point addition is not associative due to rounding errors.
+///  The task scheduler can and should ensure that the result of any parallelSum operation is deterministic.
 ///
 ATTRIBUTE_ALIGNED16(class) btSequentialImpulseConstraintSolverMt : public btSequentialImpulseConstraintSolver
 {
@@ -115,26 +76,26 @@ public:
     };
 
     // parameters to control batching
-    static bool sAllowNestedParallelForLoops;
-    static int sMinimumContactManifoldsForBatching;
-    static int sMinBatchSize;
-    static int sMaxBatchSize;
-
-    static bool sDebugDrawBatches;
+    static bool s_allowNestedParallelForLoops;        // whether to allow nested parallel operations
+    static int s_minimumContactManifoldsForBatching;  // don't even try to batch if fewer manifolds than this
+    static int s_minBatchSize;  // desired number of constraints per batch
+    static int s_maxBatchSize;
 
 protected:
-    BatchedConstraints m_batchedContactConstraints;
-    BatchedConstraints m_batchedJointConstraints;
+    static const int CACHE_LINE_SIZE = 64;
+
+    btBatchedConstraints m_batchedContactConstraints;
+    btBatchedConstraints m_batchedJointConstraints;
     int m_numFrictionDirections;
     bool m_useBatching;
     bool m_useObsoleteJointConstraints;
-    //btAlignedObjectArray<btContactManifoldCachedInfo> m_manifoldCachedInfoArray;
+    btAlignedObjectArray<btContactManifoldCachedInfo> m_manifoldCachedInfoArray;
     btAlignedObjectArray<int> m_rollingFrictionIndexTable;  // lookup table mapping contact index to rolling friction index
     btSpinMutex m_bodySolverArrayMutex;
-    char m_antiFalseSharingPadding[64]; // padding to keep mutexes in separate cachelines
+    char m_antiFalseSharingPadding[CACHE_LINE_SIZE]; // padding to keep mutexes in separate cachelines
     btSpinMutex m_kinematicBodyUniqueIdToSolverBodyTableMutex;
     btAlignedObjectArray<char> m_scratchMemory;
-    CreateBatchesWork m_createBatchesWorkArray[BT_MAX_THREAD_COUNT];
+    btBatchedConstraints::CreateBatchesWork m_createBatchesWorkArray[BT_MAX_THREAD_COUNT];
 
     virtual void randomizeConstraintOrdering( int iteration, int numIterations );
     virtual btScalar resolveAllJointConstraints( int iteration );
@@ -150,7 +111,7 @@ protected:
 	int getOrInitSolverBodyThreadsafe(btCollisionObject& body, btScalar timeStep);
     void allocAllContactConstraints(btPersistentManifold** manifoldPtr, int numManifolds, const btContactSolverInfo& infoGlobal);
     void setupAllContactConstraints(const btContactSolverInfo& infoGlobal);
-    void randomizeBatchedConstraintOrdering( BatchedConstraints* batchedConstraints );
+    void randomizeBatchedConstraintOrdering( btBatchedConstraints* batchedConstraints );
 
 public:
 

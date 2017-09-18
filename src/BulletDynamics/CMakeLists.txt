@@ -16,6 +16,7 @@ SET(BulletDynamics_SRCS
 	ConstraintSolver/btPoint2PointConstraint.cpp
 	ConstraintSolver/btSequentialImpulseConstraintSolver.cpp
 	ConstraintSolver/btSequentialImpulseConstraintSolverMt.cpp
+	ConstraintSolver/btBatchedConstraints.cpp
 	ConstraintSolver/btNNCGConstraintSolver.cpp
 	ConstraintSolver/btSliderConstraint.cpp
 	ConstraintSolver/btSolve2LinearConstraint.cpp
