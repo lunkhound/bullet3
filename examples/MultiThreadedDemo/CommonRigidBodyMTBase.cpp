@@ -362,8 +362,8 @@ static int gSolverMode = SOLVER_SIMD |
 static btScalar gSliderSolverIterations = 10.0f; // should be int
 static btScalar gSliderNumThreads = 1.0f;  // should be int
 static btScalar gSliderLargeIslandManifoldCount = 1000.0f; // should be int
-static btScalar gSliderMinBatchSize = 80.0f; // should be int
-static btScalar gSliderMaxBatchSize = 100.0f; // should be int
+static btScalar gSliderMinBatchSize = btScalar(btSequentialImpulseConstraintSolverMt::s_minBatchSize); // should be int
+static btScalar gSliderMaxBatchSize = btScalar(btSequentialImpulseConstraintSolverMt::s_maxBatchSize); // should be int
 static btScalar gSliderLeastSquaresResidualThreshold = 0.0f;
 
 ////////////////////////////////////
@@ -463,6 +463,23 @@ void setTaskSchedulerComboBoxCallback(int combobox, const char* item, void* user
 }
 
 
+void setBatchingMethodComboBoxCallback(int combobox, const char* item, void* userPointer)
+{
+#if BT_THREADSAFE
+    const char** items = static_cast<const char**>( userPointer );
+    for ( int i = 0; i < btBatchedConstraints::BATCHING_METHOD_COUNT; ++i )
+    {
+        if ( strcmp( item, items[ i ] ) == 0 )
+        {
+            // change the task scheduler
+            btBatchedConstraints::s_batchingMethod = static_cast<btBatchedConstraints::BatchingMethod>( i );
+            break;
+        }
+    }
+#endif // #if BT_THREADSAFE
+}
+
+
 static void setThreadCountCallback(float val, void* userPtr)
 {
 #if BT_THREADSAFE
@@ -482,21 +499,21 @@ static void setSolverIterationCountCallback(float val, void* userPtr)
 static void setLargeIslandManifoldCountCallback( float val, void* userPtr )
 {
     gLargeIslandManifoldCount = int( gSliderLargeIslandManifoldCount );
-    btSequentialImpulseConstraintSolverMt::sMinimumContactManifoldsForBatching = gLargeIslandManifoldCount;
+    btSequentialImpulseConstraintSolverMt::s_minimumContactManifoldsForBatching = gLargeIslandManifoldCount;
 }
 
 static void setMinBatchSizeCallback( float val, void* userPtr )
 {
     gSliderMaxBatchSize = (std::max)(gSliderMinBatchSize, gSliderMaxBatchSize);
-    btSequentialImpulseConstraintSolverMt::sMinBatchSize = int(gSliderMinBatchSize);
-    btSequentialImpulseConstraintSolverMt::sMaxBatchSize = int(gSliderMaxBatchSize);
+    btSequentialImpulseConstraintSolverMt::s_minBatchSize = int(gSliderMinBatchSize);
+    btSequentialImpulseConstraintSolverMt::s_maxBatchSize = int(gSliderMaxBatchSize);
 }
 
 static void setMaxBatchSizeCallback( float val, void* userPtr )
 {
     gSliderMinBatchSize = (std::min)(gSliderMinBatchSize, gSliderMaxBatchSize);
-    btSequentialImpulseConstraintSolverMt::sMinBatchSize = int(gSliderMinBatchSize);
-    btSequentialImpulseConstraintSolverMt::sMaxBatchSize = int(gSliderMaxBatchSize);
+    btSequentialImpulseConstraintSolverMt::s_minBatchSize = int(gSliderMinBatchSize);
+    btSequentialImpulseConstraintSolverMt::s_maxBatchSize = int(gSliderMaxBatchSize);
 }
 
 static void setLeastSquaresResidualThresholdCallback( float val, void* userPtr )
@@ -725,13 +742,6 @@ void CommonRigidBodyMTBase::createDefaultParameters()
             m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
         }
         {
-            ButtonParams button( "Allow Nested ParallelFor", 0, true );
-            button.m_initialState = btSequentialImpulseConstraintSolverMt::sAllowNestedParallelForLoops;
-            button.m_userPointer = &btSequentialImpulseConstraintSolverMt::sAllowNestedParallelForLoops;
-            button.m_callback = boolPtrButtonCallback;
-            m_guiHelper->getParameterInterface()->registerButtonParameter( button );
-        }
-        {
             // a slider for the number of manifolds an island needs to be too large for parallel dispatch
             SliderParams slider( "LgIslandManiCount", &gSliderLargeIslandManifoldCount );
             slider.m_minVal = 1.0f;
@@ -740,6 +750,23 @@ void CommonRigidBodyMTBase::createDefaultParameters()
             slider.m_userPointer = NULL;
             slider.m_clampToIntegers = true;
             m_guiHelper->getParameterInterface()->registerSliderFloatParameter( slider );
+        }
+        {
+            // create a combo box for selecting the batching method
+            static const char* sBatchingMethodComboBoxItems[ btBatchedConstraints::BATCHING_METHOD_COUNT ] =
+            {
+                "Batching: Greedy",
+                "Batching: Body Lookup",
+                "Batching: Body Lookup Hybrid",
+                "Batching: Directional"
+            };
+            ComboBoxParams comboParams;
+            comboParams.m_userPointer = sBatchingMethodComboBoxItems;
+            comboParams.m_numItems = btBatchedConstraints::BATCHING_METHOD_COUNT;
+            comboParams.m_startItem = static_cast<int>(btBatchedConstraints::s_batchingMethod);
+            comboParams.m_items = sBatchingMethodComboBoxItems;
+            comboParams.m_callback = setBatchingMethodComboBoxCallback;
+            m_guiHelper->getParameterInterface()->registerComboBox( comboParams );
         }
         {
             // a slider for the sequentialImpulseConstraintSolverMt min batch size (when batching)
@@ -764,9 +791,16 @@ void CommonRigidBodyMTBase::createDefaultParameters()
         {
             // create a button to toggle debug drawing of batching visualization
             ButtonParams button( "Visualize batching", 0, true );
-            bool* ptr = &btSequentialImpulseConstraintSolverMt::sDebugDrawBatches;
+            bool* ptr = &btBatchedConstraints::s_debugDrawBatches;
             button.m_initialState = *ptr;
             button.m_userPointer = ptr;
+            button.m_callback = boolPtrButtonCallback;
+            m_guiHelper->getParameterInterface()->registerButtonParameter( button );
+        }
+        {
+            ButtonParams button( "Allow Nested ParallelFor", 0, true );
+            button.m_initialState = btSequentialImpulseConstraintSolverMt::s_allowNestedParallelForLoops;
+            button.m_userPointer = &btSequentialImpulseConstraintSolverMt::s_allowNestedParallelForLoops;
             button.m_callback = boolPtrButtonCallback;
             m_guiHelper->getParameterInterface()->registerButtonParameter( button );
         }
