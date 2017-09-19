@@ -172,12 +172,14 @@ struct JobContext
         m_headIndex = 0;
         m_tailIndex = 0;
         m_workersShouldCheckQueue = false;
+        m_workersShouldSleep = false;
         m_useSpinMutex = false;
         m_coolDownTime = 1000; // 1000 microseconds
     }
     b3CriticalSection* m_queueLock;
     btSpinMutex m_mutex;
     volatile bool m_workersShouldCheckQueue;
+    volatile bool m_workersShouldSleep;
 
     btAlignedObjectArray<IJob*> m_jobQueue;
     bool m_queueIsEmpty;
@@ -283,6 +285,11 @@ static void WorkerThreadFunc( void* userPtr, void* lsMemory )
         {
             // todo: spin wait a bit to avoid hammering the empty queue
             btSpinPause();
+            if ( jobContext->m_workersShouldSleep )
+            {
+                shouldSleep = true;
+                break;
+            }
             // if jobs are incoming,
             if (jobContext->m_workersShouldCheckQueue)
             {
@@ -365,7 +372,6 @@ public:
     virtual void shutdown()
     {
         setWorkersActive( false );
-        m_jobContext.m_coolDownTime = 0;
         waitForWorkersToSleep();
         m_threadSupport->deleteCriticalSection( m_jobContext.m_queueLock );
         m_jobContext.m_queueLock = NULL;
@@ -466,6 +472,7 @@ public:
     {
         BT_PROFILE( "waitForWorkersToSleep" );
         //m_threadSupport->waitForAllTasksToComplete();
+        m_jobContext.m_workersShouldSleep = true;
         int numWorkersToWaitFor = btMin(m_numWorkersStarted, m_numWorkerThreads);
         for ( int i = 0; i < numWorkersToWaitFor; i++ )
         {
@@ -481,6 +488,13 @@ public:
         }
     }
 
+    virtual void sleepWorkerThreadsHint() BT_OVERRIDE
+    {
+        BT_PROFILE( "sleepWorkerThreadsHint" );
+        // hint the task scheduler that we may not be using these threads for a little while
+        waitForWorkersToSleep();
+    }
+
     void prepareWorkerThreads()
     {
         for ( int iWorker = 0; iWorker < m_numWorkerThreads; ++iWorker )
@@ -490,6 +504,7 @@ public:
             storage->numJobsFinished = 0;
             storage->m_mutex.unlock();
         }
+        m_jobContext.m_workersShouldSleep = false;
         setWorkersActive( true );
     }
 

@@ -129,6 +129,7 @@ public:
     virtual void setNumThreads( int numThreads ) = 0;
     virtual void parallelFor( int iBegin, int iEnd, int grainSize, const btIParallelForBody& body ) = 0;
     virtual btScalar parallelSum( int iBegin, int iEnd, int grainSize, const btIParallelSumBody& body ) = 0;
+    virtual void sleepWorkerThreadsHint() {}  // hint the task scheduler that we may not be using these threads for a little while
 
     // internal use only
     virtual void activate();
