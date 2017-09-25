@@ -485,6 +485,22 @@ inline bool BatchCompare(const btBatchedConstraints::Range& a, const btBatchedCo
 }
 
 
+static void writeGrainSizes(btBatchedConstraints* bc)
+{
+    typedef btBatchedConstraints::Range Range;
+    int numPhases = bc->m_phases.size();
+    bc->m_phaseGrainSize.resizeNoInitialize(numPhases);
+    int numThreads = btGetTaskScheduler()->getNumThreads();
+    for (int iPhase = 0; iPhase < numPhases; ++iPhase)
+    {
+        const Range& phase = bc->m_phases[ iPhase ];
+        int numBatches = phase.end - phase.begin;
+        float grainSize = floor((0.25f*numBatches / float(numThreads)) + 0.0f);
+        bc->m_phaseGrainSize[ iPhase ] = btMax(1, int(grainSize));
+    }
+}
+
+
 static void writeOutBatchesSimple(btBatchedConstraints* bc,
     const int* constraintBatchIds,
     int numConstraints,
@@ -553,6 +569,7 @@ static void writeOutBatchesSimple(btBatchedConstraints* bc,
     {
         bc->m_phaseOrder[i] = i;
     }
+    writeGrainSizes(bc);
 }
 
 
@@ -635,6 +652,7 @@ static void writeOutBatches(btBatchedConstraints* bc,
     {
         bc->m_phaseOrder[i] = i;
     }
+    writeGrainSizes(bc);
 }
 
 
@@ -1100,6 +1118,36 @@ static int makePhaseRemappingTable(char* phaseMappingTable, int* numConstraintsP
 }
 
 
+static void makePhaseOrderTable(char* phaseOrderTable, const int* numConstraintsPerPhase, int numPhases)
+{
+    BT_PROFILE("makePhaseOrderTable");
+    // create a table that orders phases largest to smallest
+    for (int iPhase = 0; iPhase < numPhases; ++iPhase)
+    {
+        phaseOrderTable[iPhase] = iPhase;
+    }
+    // insertion sort (numPhases is small so no need for more advanced sorting)
+    for (int iPhase = 0; iPhase < numPhases; ++iPhase)
+    {
+        int maxN = numConstraintsPerPhase[phaseOrderTable[iPhase]];
+        int iMaxElem = iPhase;
+        for (int iSrc = iPhase + 1; iSrc < numPhases; ++iSrc)
+        {
+            int n = numConstraintsPerPhase[phaseOrderTable[iSrc]];
+            if (n > maxN)
+            {
+                maxN = n;
+                iMaxElem = iSrc;
+            }
+        }
+        if (iMaxElem != iPhase)
+        {
+            btSwap(phaseOrderTable[iPhase], phaseOrderTable[iMaxElem]);
+        }
+    }
+}
+
+
 struct CreateBatchesParams
 {
     int* constraintBatchIds;
@@ -1276,6 +1324,10 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
                     {
                         iNewBatch = curBatch++;
                     }
+                    if (batches[iNewBatch].numConstraints > minBatchSize)
+                    {
+                        iNewBatch = curBatch++;
+                    }
                     iBatch = iNewBatch;
                     bodyBatchIds[ body ] = iBatch;
                     batches[ iBatch ].phaseId = iPhase;
@@ -1347,16 +1399,19 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
 struct CreateBatchesForPhaseLoop : public btIParallelForBody
 {
     const CreateBatchesParams* m_params;
+    const char* m_phaseOrderTable;
 
-    CreateBatchesForPhaseLoop( const CreateBatchesParams& params )
+    CreateBatchesForPhaseLoop( const CreateBatchesParams& params, const char* phaseOrderTable )
     {
         m_params = &params;
+        m_phaseOrderTable = phaseOrderTable;
     }
     void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
     {
         BT_PROFILE( "CreateBatchesForPhaseLoop" );
-        for ( int iPhase = iBegin; iPhase < iEnd; ++iPhase )
+        for ( int iiPhase = iBegin; iiPhase < iEnd; ++iiPhase )
         {
+            int iPhase = m_phaseOrderTable[ iiPhase ];
             createBatchesForPhase(iPhase, *m_params);
         }
     }
@@ -1462,8 +1517,13 @@ static void setupBodyLookupGreedyHybridMt(
 
     if (true)
     {
+        char phaseOrderTable[maxNumPhases];
+        for (int iPhase = 0; iPhase < numPhases; ++iPhase)
+        {
+            phaseOrderTable[iPhase] = iPhase;
+        }
         // parallel batch creation (deterministic)
-        CreateBatchesForPhaseLoop loop(params);
+        CreateBatchesForPhaseLoop loop(params, phaseOrderTable);
         btParallelFor( 0, numPhases, 1, loop );
     }
     else
@@ -1734,31 +1794,13 @@ static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numC
     int minAllowedConstraintsPerPhase = maxConstraintsPerPhase/4;
     for (int iSrc = 0; iSrc < numPhases; ++iSrc)
     {
-        if (numConstraintsPerPhase[iSrc] > 0 && numConstraintsPerPhase[iSrc] < minAllowedConstraintsPerPhase)
+        if (numConstraintsPerPhase[iSrc] > 0 && numConstraintsPerPhase[iSrc] < minAllowedConstraintsPerPhase && iSrc != iFlexPhase)
         {
             btVector3 srcDir = phaseAxis[ iSrc ];
             // find dest phase to merge into
             // find smallest valid phase
             float bestDot = 0.0f;
             int iDest = 0;
-            if ( iSrc == iFlexPhase )
-            {
-                int bestScore = maxConstraintsPerPhase;
-                for ( int i = 0; i < numPhases; ++i )
-                {
-                    if (i != iSrc)
-                    {
-                        int n = numConstraintsPerPhase[ i ];
-                        if ( n >= minAllowedConstraintsPerPhase && n < maxConstraintsPerPhase && n < bestScore )
-                        {
-                            bestScore = n;
-                            iDest = i;
-                        }
-                    }
-                }
-                bestDot = 1.0f;
-            }
-            else
             {
                 float bestScore = BT_LARGE_FLOAT;
                 for ( int i = 0; i < numPhases; ++i )
@@ -1767,7 +1809,7 @@ static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numC
                     btVector3 destDir = phaseAxis[ i ];
                     float dot = fabs( srcDir.dot( destDir ) );
                     float score = ( 1.0f - dot )*float( n );
-                    if ( n >= minAllowedConstraintsPerPhase && n < maxConstraintsPerPhase && score < bestScore )
+                    if ( n >= minAllowedConstraintsPerPhase && n < maxConstraintsPerPhase && score < bestScore && i != iFlexPhase )
                     {
                         bestScore = n;
                         bestDot = dot;
@@ -1797,6 +1839,29 @@ static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numC
             }
         }
     }
+    // now merge the flex phase into the smallest (non-zero) other phase
+    if ( numConstraintsPerPhase[ iFlexPhase ] > 0 )
+    {
+        int bestScore = maxConstraintsPerPhase;
+        int iDest = -1;
+        for ( int i = 0; i < numPhases; ++i )
+        {
+            if ( i != iFlexPhase )
+            {
+                int n = numConstraintsPerPhase[ i ];
+                if ( n > 0 && n < maxConstraintsPerPhase && n < bestScore )
+                {
+                    bestScore = n;
+                    iDest = i;
+                }
+            }
+        }
+        int iSrc = iFlexPhase;
+        numConstraintsPerPhase[ iDest ] += numConstraintsPerPhase[ iSrc ];
+        numConstraintsPerPhase[ iSrc ] = 0;
+        phaseMappingTable[ iSrc ] = iDest;
+    }
+
     for (int iDest = 0; iDest < numPhases; ++iDest)
     {
         // if slot is empty,
@@ -2060,8 +2125,11 @@ static void setupDirectionalBatchesMt(
 
     if (true)
     {
+        // dispatch phases in sorted order (largest to smallest) because it improves thread utilization for some task schedulers
+        char phaseOrderTable[numPhases];
+        makePhaseOrderTable(phaseOrderTable, numConstraintsPerPhase, numPhases);
         // parallel batch creation (deterministic)
-        CreateBatchesForPhaseLoop loop(params);
+        CreateBatchesForPhaseLoop loop(params, phaseOrderTable);
         btParallelFor( 0, numActualPhases, 1, loop );
     }
     else
@@ -2097,12 +2165,14 @@ static void setupSingleBatch(
     bc->m_batches.resizeNoInitialize( 0 );
     bc->m_phases.resizeNoInitialize( 0 );
     bc->m_phaseOrder.resizeNoInitialize( 0 );
+    bc->m_phaseGrainSize.resizeNoInitialize( 0 );
 
     if (numConstraints > 0)
     {
         bc->m_batches.push_back( Range( 0, numConstraints ) );
         bc->m_phases.push_back( Range( 0, 1 ) );
         bc->m_phaseOrder.push_back(0);
+        bc->m_phaseGrainSize.push_back(1);
     }
 }
 

@@ -1066,7 +1066,7 @@ btScalar btSequentialImpulseConstraintSolverMt::resolveAllContactConstraints()
     {
         int iPhase = batchedCons.m_phaseOrder[ iiPhase ];
         const btBatchedConstraints::Range& phase = batchedCons.m_phases[ iPhase ];
-        int grainSize = 1;
+        int grainSize = batchedCons.m_phaseGrainSize[iPhase];
         leastSquaresResidual += btParallelSum( phase.begin, phase.end, grainSize, loop );
     }
     return leastSquaresResidual;
@@ -1103,11 +1103,12 @@ btScalar btSequentialImpulseConstraintSolverMt::resolveAllContactFrictionConstra
     const btBatchedConstraints& batchedCons = m_batchedContactConstraints;
     ContactFrictionSolverLoop loop( this, &batchedCons );
     btScalar leastSquaresResidual = 0.f;
+    unsigned long long int startTime;
     for ( int iiPhase = 0; iiPhase < batchedCons.m_phases.size(); ++iiPhase )
     {
         int iPhase = batchedCons.m_phaseOrder[ iiPhase ];
         const btBatchedConstraints::Range& phase = batchedCons.m_phases[ iPhase ];
-        int grainSize = 1;
+        int grainSize = batchedCons.m_phaseGrainSize[iPhase];
         leastSquaresResidual += btParallelSum( phase.begin, phase.end, grainSize, loop );
     }
     return leastSquaresResidual;

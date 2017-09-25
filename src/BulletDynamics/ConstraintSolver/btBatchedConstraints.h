@@ -47,6 +47,7 @@ struct btBatchedConstraints
     btAlignedObjectArray<int> m_constraintIndices;
     btAlignedObjectArray<Range> m_batches;  // each batch is a range of indices in the m_constraintIndices array
     btAlignedObjectArray<Range> m_phases;  // each phase is range of indices in the m_batches array
+    btAlignedObjectArray<char> m_phaseGrainSize;  // max grain size for each phase
     btAlignedObjectArray<int> m_phaseOrder;  // phases can be done in any order, so we can randomize the order here
     btIDebugDraw* m_debugDrawer;
 
