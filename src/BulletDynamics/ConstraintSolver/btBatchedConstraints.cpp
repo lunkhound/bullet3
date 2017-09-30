@@ -1818,9 +1818,9 @@ static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numC
                 }
             }
             const float dotThresh =
-                //0.8164f;
+                0.8164f;
                 //0.707f;
-                0.5773f;
+                //0.5773f;
             if (bestDot >= dotThresh)
             {
                 // merge phases
@@ -1844,6 +1844,7 @@ static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numC
     {
         int bestScore = maxConstraintsPerPhase;
         int iDest = -1;
+        bool foundDestPhase = false;
         for ( int i = 0; i < numPhases; ++i )
         {
             if ( i != iFlexPhase )
@@ -1853,13 +1854,18 @@ static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numC
                 {
                     bestScore = n;
                     iDest = i;
+                    foundDestPhase = true;
                 }
             }
         }
-        int iSrc = iFlexPhase;
-        numConstraintsPerPhase[ iDest ] += numConstraintsPerPhase[ iSrc ];
-        numConstraintsPerPhase[ iSrc ] = 0;
-        phaseMappingTable[ iSrc ] = iDest;
+        // if suitable dest is found,
+        if (foundDestPhase )
+        {
+            int iSrc = iFlexPhase;
+            numConstraintsPerPhase[ iDest ] += numConstraintsPerPhase[ iSrc ];
+            numConstraintsPerPhase[ iSrc ] = 0;
+            phaseMappingTable[ iSrc ] = iDest;
+        }
     }
 
     for (int iDest = 0; iDest < numPhases; ++iDest)
@@ -1899,6 +1905,7 @@ static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numC
             numActualPhases++;
         }
     }
+    btAssert(numActualPhases > 0);
     return numActualPhases;
 }
 
