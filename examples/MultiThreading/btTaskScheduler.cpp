@@ -462,7 +462,10 @@ public:
             if (storage->status == WorkerThreadStatus::kSleeping)
             {
                 m_threadSupport->runTask( B3_THREAD_SCHEDULE_TASK, &m_jobContext, iWorker );
-                m_numWorkersStarted++;
+                if (m_numWorkersStarted < m_numWorkerThreads)
+                {
+                    m_numWorkersStarted++;
+                }
                 numActiveWorkers++;
             }
         }
@@ -479,6 +482,7 @@ public:
             int iThread;
             int threadStatus;
             m_threadSupport->waitForResponse( &iThread, &threadStatus );  // wait for worker threads to finish running
+            m_numWorkersStarted--;
         }
         for ( int i = 0; i < m_numWorkerThreads; i++ )
         {
@@ -492,7 +496,7 @@ public:
     {
         BT_PROFILE( "sleepWorkerThreadsHint" );
         // hint the task scheduler that we may not be using these threads for a little while
-        waitForWorkersToSleep();
+        m_jobContext.m_workersShouldSleep = true;
     }
 
     void prepareWorkerThreads()
