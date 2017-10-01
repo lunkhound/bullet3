@@ -27,7 +27,6 @@ const int kUnassignedBatch = -1;
 const int kNoMerge = -1;
 
 bool btBatchedConstraints::s_debugDrawBatches = false;
-btBatchedConstraints::BatchingMethod btBatchedConstraints::s_batchingMethod = btBatchedConstraints::BATCHING_METHOD_DIRECTIONAL;
 
 
 struct btBatchedConstraintInfo
@@ -260,7 +259,7 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         {
             int iBody = conInfo.bodyIds[ iiBody ];
             isDynamic[ iiBody ] = bodyDynamicFlags[iBody];
-            isConnected[ iiBody ] = bodyConnectivityFlags[ iBody ];
+            isConnected[ iiBody ] = false; //bodyConnectivityFlags[ iBody ];
             if ( isDynamic[ iiBody ] )
             {
                 int iBatch = bodyBatchIds[iBody];
@@ -369,7 +368,7 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
                         if (numBodiesToBeAdded > 0)
                         {
                             // prevent this body from causing any more bodies to be added this phase
-                            bodyConnectivityFlags[iBody] = true;
+                            //bodyConnectivityFlags[iBody] = true;
                         }
                     }
                     else
@@ -1766,7 +1765,7 @@ public:
 };
 
 
-static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numConstraintsPerPhase, int numPhases, int iFlexPhase)
+static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numConstraintsPerPhase, int numPhases, int iFlexPhase, float avgConnectivity)
 {
     BT_PROFILE("makePhaseRemappingTableDirectional");
     // join together small phases to try to create fewer more evenly-sized phases
@@ -1792,6 +1791,23 @@ static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numC
         maxConstraintsPerPhase = btMax(maxConstraintsPerPhase, numConstraintsPerPhase[i]);
     }
     int minAllowedConstraintsPerPhase = maxConstraintsPerPhase/4;
+    float dotThresh = 0.0f;
+    if (avgConnectivity >= 6.0f)
+    {
+        dotThresh = 0.8164f;
+    }
+    else if (avgConnectivity >= 4.0f)
+    {
+        dotThresh = 0.707f;
+    }
+    else if (avgConnectivity >= 3.7f)
+    {
+        dotThresh = 0.5773f;
+    }
+    else
+    {
+        dotThresh = 0.0f;
+    }
     for (int iSrc = 0; iSrc < numPhases; ++iSrc)
     {
         if (numConstraintsPerPhase[iSrc] > 0 && numConstraintsPerPhase[iSrc] < minAllowedConstraintsPerPhase && iSrc != iFlexPhase)
@@ -1817,10 +1833,6 @@ static int makePhaseRemappingTableDirectional(char* phaseMappingTable, int* numC
                     }
                 }
             }
-            const float dotThresh =
-                0.8164f;
-                //0.707f;
-                //0.5773f;
             if (bestDot >= dotThresh)
             {
                 // merge phases
@@ -2024,6 +2036,7 @@ static void setupDirectionalBatchesMt(
     const btAlignedObjectArray<btSolverBody>& bodies,
     int minBatchSize,
     int maxBatchSize,
+    float avgConnectivity,
     btBatchedConstraints::CreateBatchesWork* workArray
     )
 {
@@ -2112,7 +2125,7 @@ static void setupDirectionalBatchesMt(
         numConstraintsPerPhase[iPhase]++;
     }
     char phaseMappingTable[numPhases];
-    int numActualPhases = makePhaseRemappingTableDirectional(phaseMappingTable, numConstraintsPerPhase, numPhases, MAX_NUM_PHASES-1);
+    int numActualPhases = makePhaseRemappingTableDirectional(phaseMappingTable, numConstraintsPerPhase, numPhases, MAX_NUM_PHASES-1, avgConnectivity);
 
     CreateBatchesParams params;
     params.constraintBatchIds = &constraintBatchIds[0];
@@ -2187,15 +2200,17 @@ static void setupSingleBatch(
 void btBatchedConstraints::setup(
     btConstraintArray* constraints,
     const btAlignedObjectArray<btSolverBody>& bodies,
+    BatchingMethod batchingMethod,
     int minBatchSize,
     int maxBatchSize,
+    float avgConnectivity,
     btAlignedObjectArray<char>* scratchMemory,
     CreateBatchesWork* workArray
     )
 {
     if (constraints->size() >= minBatchSize*4)
     {
-        switch (s_batchingMethod)
+        switch (batchingMethod)
         {
         case BATCHING_METHOD_GREEDY:
             setupBatchesGreedyWithMerging( this, constraints, bodies, minBatchSize, maxBatchSize );
@@ -2210,7 +2225,7 @@ void btBatchedConstraints::setup(
             break;
 
         case BATCHING_METHOD_DIRECTIONAL:
-            setupDirectionalBatchesMt( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, workArray );
+            setupDirectionalBatchesMt( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, avgConnectivity, workArray );
             break;
         }
         if (s_debugDrawBatches)

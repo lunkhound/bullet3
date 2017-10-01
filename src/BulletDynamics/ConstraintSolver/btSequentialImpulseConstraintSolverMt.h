@@ -78,6 +78,8 @@ public:
     // parameters to control batching
     static bool s_allowNestedParallelForLoops;        // whether to allow nested parallel operations
     static int s_minimumContactManifoldsForBatching;  // don't even try to batch if fewer manifolds than this
+    static btBatchedConstraints::BatchingMethod s_contactBatchingMethod;
+    static btBatchedConstraints::BatchingMethod s_jointBatchingMethod;
     static int s_minBatchSize;  // desired number of constraints per batch
     static int s_maxBatchSize;
 
@@ -104,7 +106,7 @@ protected:
     virtual btScalar resolveAllContactConstraintsInterleaved();
     virtual btScalar resolveAllRollingFrictionConstraints();
 
-    virtual void setupBatchedContactConstraints();
+    virtual void setupBatchedContactConstraints(float avgConnectivity);
     virtual void setupBatchedJointConstraints();
     virtual void warmstartingWriteBackContacts(const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
 

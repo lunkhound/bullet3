@@ -51,7 +51,6 @@ struct btBatchedConstraints
     btAlignedObjectArray<int> m_phaseOrder;  // phases can be done in any order, so we can randomize the order here
     btIDebugDraw* m_debugDrawer;
 
-    static BatchingMethod s_batchingMethod;
     static bool s_debugDrawBatches;
 
     struct CreateBatchesWork
@@ -66,8 +65,10 @@ struct btBatchedConstraints
     btBatchedConstraints() {m_debugDrawer=NULL;}
     void setup( btConstraintArray* constraints,
         const btAlignedObjectArray<btSolverBody>& bodies,
+        BatchingMethod batchingMethod,
         int minBatchSize,
         int maxBatchSize,
+        float avgConnectivity,
         btAlignedObjectArray<char>* scratchMemory,
         CreateBatchesWork* workArray
     );

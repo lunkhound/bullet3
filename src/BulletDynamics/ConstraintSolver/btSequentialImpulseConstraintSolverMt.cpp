@@ -29,6 +29,8 @@ bool btSequentialImpulseConstraintSolverMt::s_allowNestedParallelForLoops = fals
 int btSequentialImpulseConstraintSolverMt::s_minimumContactManifoldsForBatching = 1500;
 int btSequentialImpulseConstraintSolverMt::s_minBatchSize = 80;
 int btSequentialImpulseConstraintSolverMt::s_maxBatchSize = 100;
+btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_contactBatchingMethod = btBatchedConstraints::BATCHING_METHOD_DIRECTIONAL;
+btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_jointBatchingMethod = btBatchedConstraints::BATCHING_METHOD_GREEDY;
 
 
 btSequentialImpulseConstraintSolverMt::btSequentialImpulseConstraintSolverMt()
@@ -44,17 +46,34 @@ btSequentialImpulseConstraintSolverMt::~btSequentialImpulseConstraintSolverMt()
 }
 
 
-void btSequentialImpulseConstraintSolverMt::setupBatchedContactConstraints()
+void btSequentialImpulseConstraintSolverMt::setupBatchedContactConstraints(float avgConnectivity)
 {
     BT_PROFILE("setupBatchedContactConstraints");
-    m_batchedContactConstraints.setup( &m_tmpSolverContactConstraintPool, m_tmpSolverBodyPool, s_minBatchSize, s_maxBatchSize, &m_scratchMemory, m_createBatchesWorkArray );
+    m_batchedContactConstraints.setup( &m_tmpSolverContactConstraintPool,
+        m_tmpSolverBodyPool,
+        s_contactBatchingMethod,
+        s_minBatchSize,
+        s_maxBatchSize,
+        avgConnectivity,
+        &m_scratchMemory,
+        m_createBatchesWorkArray
+    );
 }
 
 
 void btSequentialImpulseConstraintSolverMt::setupBatchedJointConstraints()
 {
     BT_PROFILE("setupBatchedJointConstraints");
-    m_batchedJointConstraints.setup( &m_tmpSolverNonContactConstraintPool, m_tmpSolverBodyPool, s_minBatchSize, s_maxBatchSize, &m_scratchMemory, m_createBatchesWorkArray );
+    float avgConnectivity = float(m_tmpSolverNonContactConstraintPool.size()) / m_tmpSolverBodyPool.size();
+    m_batchedJointConstraints.setup( &m_tmpSolverNonContactConstraintPool,
+        m_tmpSolverBodyPool,
+        s_jointBatchingMethod,
+        s_minBatchSize,
+        s_maxBatchSize,
+        avgConnectivity,
+        &m_scratchMemory,
+        m_createBatchesWorkArray
+    );
 }
 
 
@@ -586,7 +605,8 @@ void btSequentialImpulseConstraintSolverMt::convertContacts(btPersistentManifold
         allocAllContactConstraints( manifoldPtr, numManifolds, infoGlobal );
         if ( m_useBatching )
         {
-            setupBatchedContactConstraints();
+            float contactsPerBody = float(numManifolds)/m_tmpSolverBodyPool.size();
+            setupBatchedContactConstraints(contactsPerBody);
         }
         setupAllContactConstraints( infoGlobal );
     }
@@ -1103,7 +1123,6 @@ btScalar btSequentialImpulseConstraintSolverMt::resolveAllContactFrictionConstra
     const btBatchedConstraints& batchedCons = m_batchedContactConstraints;
     ContactFrictionSolverLoop loop( this, &batchedCons );
     btScalar leastSquaresResidual = 0.f;
-    unsigned long long int startTime;
     for ( int iiPhase = 0; iiPhase < batchedCons.m_phases.size(); ++iiPhase )
     {
         int iPhase = batchedCons.m_phaseOrder[ iiPhase ];

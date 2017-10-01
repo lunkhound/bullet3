@@ -472,7 +472,7 @@ void setBatchingMethodComboBoxCallback(int combobox, const char* item, void* use
         if ( strcmp( item, items[ i ] ) == 0 )
         {
             // change the task scheduler
-            btBatchedConstraints::s_batchingMethod = static_cast<btBatchedConstraints::BatchingMethod>( i );
+            btSequentialImpulseConstraintSolverMt::s_contactBatchingMethod = static_cast<btBatchedConstraints::BatchingMethod>( i );
             break;
         }
     }
@@ -763,7 +763,7 @@ void CommonRigidBodyMTBase::createDefaultParameters()
             ComboBoxParams comboParams;
             comboParams.m_userPointer = sBatchingMethodComboBoxItems;
             comboParams.m_numItems = btBatchedConstraints::BATCHING_METHOD_COUNT;
-            comboParams.m_startItem = static_cast<int>(btBatchedConstraints::s_batchingMethod);
+            comboParams.m_startItem = static_cast<int>(btSequentialImpulseConstraintSolverMt::s_contactBatchingMethod);
             comboParams.m_items = sBatchingMethodComboBoxItems;
             comboParams.m_callback = setBatchingMethodComboBoxCallback;
             m_guiHelper->getParameterInterface()->registerComboBox( comboParams );
