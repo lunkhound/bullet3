@@ -30,7 +30,7 @@ int btSequentialImpulseConstraintSolverMt::s_minimumContactManifoldsForBatching 
 int btSequentialImpulseConstraintSolverMt::s_minBatchSize = 80;
 int btSequentialImpulseConstraintSolverMt::s_maxBatchSize = 100;
 btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_contactBatchingMethod = btBatchedConstraints::BATCHING_METHOD_DIRECTIONAL;
-btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_jointBatchingMethod = btBatchedConstraints::BATCHING_METHOD_GREEDY;
+btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_jointBatchingMethod = btBatchedConstraints::BATCHING_METHOD_SINGLE_PHASE;
 
 
 btSequentialImpulseConstraintSolverMt::btSequentialImpulseConstraintSolverMt()
@@ -61,10 +61,9 @@ void btSequentialImpulseConstraintSolverMt::setupBatchedContactConstraints(float
 }
 
 
-void btSequentialImpulseConstraintSolverMt::setupBatchedJointConstraints()
+void btSequentialImpulseConstraintSolverMt::setupBatchedJointConstraints(float avgConnectivity)
 {
     BT_PROFILE("setupBatchedJointConstraints");
-    float avgConnectivity = float(m_tmpSolverNonContactConstraintPool.size()) / m_tmpSolverBodyPool.size();
     m_batchedJointConstraints.setup( &m_tmpSolverNonContactConstraintPool,
         m_tmpSolverBodyPool,
         s_jointBatchingMethod,
@@ -613,6 +612,249 @@ void btSequentialImpulseConstraintSolverMt::convertContacts(btPersistentManifold
 }
 
 
+void btSequentialImpulseConstraintSolverMt::internalInitMultipleJoints( btTypedConstraint** constraints, int iBegin, int iEnd )
+{
+    BT_PROFILE("internalInitMultipleJoints");
+    for ( int i = iBegin; i < iEnd; i++ )
+	{
+		btTypedConstraint* constraint = constraints[i];
+		btTypedConstraint::btConstraintInfo1& info1 = m_tmpConstraintSizesPool[i];
+		if (constraint->isEnabled())
+        {
+            constraint->buildJacobian();
+            constraint->internalSetAppliedImpulse( 0.0f );
+            btJointFeedback* fb = constraint->getJointFeedback();
+            if ( fb )
+            {
+                fb->m_appliedForceBodyA.setZero();
+                fb->m_appliedTorqueBodyA.setZero();
+                fb->m_appliedForceBodyB.setZero();
+                fb->m_appliedTorqueBodyB.setZero();
+            }
+            constraint->getInfo1( &info1 );
+        }
+        else
+		{
+			info1.m_numConstraintRows = 0;
+			info1.nub = 0;
+		}
+	}
+}
+
+
+struct InitJointsLoop : public btIParallelForBody
+{
+    btSequentialImpulseConstraintSolverMt* m_solver;
+    btTypedConstraint** m_constraints;
+
+    InitJointsLoop( btSequentialImpulseConstraintSolverMt* solver, btTypedConstraint** constraints )
+    {
+        m_solver = solver;
+        m_constraints = constraints;
+    }
+    void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
+    {
+        m_solver->internalInitMultipleJoints( m_constraints, iBegin, iEnd );
+    }
+};
+
+
+void btSequentialImpulseConstraintSolverMt::internalConvertMultipleJoints( const btAlignedObjectArray<JointParams>& jointParamsArray, btTypedConstraint** constraints, int iBegin, int iEnd, const btContactSolverInfo& infoGlobal )
+{
+    BT_PROFILE("internalConvertMultipleJoints");
+    for ( int i = iBegin; i < iEnd; ++i )
+    {
+        const JointParams& jointParams = jointParamsArray[ i ];
+        int currentRow = jointParams.m_solverConstraint;
+        if ( currentRow != -1 )
+        {
+            const btTypedConstraint::btConstraintInfo1& info1 = m_tmpConstraintSizesPool[ i ];
+            btAssert( currentRow < m_tmpSolverNonContactConstraintPool.size() );
+            btAssert( info1.m_numConstraintRows > 0 );
+
+            btSolverConstraint* currentConstraintRow = &m_tmpSolverNonContactConstraintPool[ currentRow ];
+            btTypedConstraint* constraint = constraints[ i ];
+
+            convertJoint( currentConstraintRow, constraint, info1, jointParams.m_solverBodyA, jointParams.m_solverBodyB, infoGlobal );
+        }
+    }
+}
+
+
+struct ConvertJointsLoop : public btIParallelForBody
+{
+    btSequentialImpulseConstraintSolverMt* m_solver;
+    const btAlignedObjectArray<btSequentialImpulseConstraintSolverMt::JointParams>& m_jointParamsArray;
+    btTypedConstraint** m_srcConstraints;
+    const btContactSolverInfo& m_infoGlobal;
+
+    ConvertJointsLoop( btSequentialImpulseConstraintSolverMt* solver,
+        const btAlignedObjectArray<btSequentialImpulseConstraintSolverMt::JointParams>& jointParamsArray,
+        btTypedConstraint** srcConstraints,
+        const btContactSolverInfo& infoGlobal
+    ) :
+        m_jointParamsArray(jointParamsArray),
+        m_infoGlobal(infoGlobal)
+    {
+        m_solver = solver;
+        m_srcConstraints = srcConstraints;
+    }
+    void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
+    {
+        m_solver->internalConvertMultipleJoints( m_jointParamsArray, m_srcConstraints, iBegin, iEnd, m_infoGlobal );
+    }
+};
+
+
+void btSequentialImpulseConstraintSolverMt::convertJoints(btTypedConstraint** constraints, int numConstraints, const btContactSolverInfo& infoGlobal)
+{
+    if ( !m_useBatching )
+    {
+        btSequentialImpulseConstraintSolver::convertJoints(constraints, numConstraints, infoGlobal);
+        return;
+    }
+    BT_PROFILE("convertJoints");
+    bool parallelJointSetup = true;
+	m_tmpConstraintSizesPool.resizeNoInitialize(numConstraints);
+    if (parallelJointSetup)
+    {
+        InitJointsLoop loop(this, constraints);
+        int grainSize = 40;
+        btParallelFor(0, numConstraints, grainSize, loop);
+    }
+    else
+    {
+        internalInitMultipleJoints( constraints, 0, numConstraints );
+    }
+
+	int totalNumRows = 0;
+    btAlignedObjectArray<JointParams> jointParamsArray;
+    jointParamsArray.resizeNoInitialize(numConstraints);
+
+	//calculate the total number of contraint rows
+	for (int i=0;i<numConstraints;i++)
+	{
+        btTypedConstraint* constraint = constraints[ i ];
+
+        JointParams& params = jointParamsArray[ i ];
+		const btTypedConstraint::btConstraintInfo1& info1 = m_tmpConstraintSizesPool[i];
+
+		if (info1.m_numConstraintRows)
+		{
+            params.m_solverConstraint = totalNumRows;
+            params.m_solverBodyA = getOrInitSolverBody( constraint->getRigidBodyA(), infoGlobal.m_timeStep );
+            params.m_solverBodyB = getOrInitSolverBody( constraint->getRigidBodyB(), infoGlobal.m_timeStep );
+		}
+        else
+		{
+            params.m_solverConstraint = -1;
+		}
+		totalNumRows += info1.m_numConstraintRows;
+	}
+	m_tmpSolverNonContactConstraintPool.resizeNoInitialize(totalNumRows);
+
+	///setup the btSolverConstraints
+    if ( parallelJointSetup )
+    {
+        ConvertJointsLoop loop(this, jointParamsArray, constraints, infoGlobal);
+        int grainSize = 20;
+        btParallelFor(0, numConstraints, grainSize, loop);
+    }
+    else
+    {
+        internalConvertMultipleJoints( jointParamsArray, constraints, 0, numConstraints, infoGlobal );
+    }
+    float constraintsPerBody = float( numConstraints ) / m_tmpSolverBodyPool.size();
+    setupBatchedJointConstraints( constraintsPerBody );
+}
+
+
+void btSequentialImpulseConstraintSolverMt::internalConvertBodies(btCollisionObject** bodies, int iBegin, int iEnd, const btContactSolverInfo& infoGlobal)
+{
+    BT_PROFILE("internalConvertBodies");
+    for (int i=iBegin; i < iEnd; i++)
+	{
+        btCollisionObject* obj = bodies[i];
+		obj->setCompanionId(i);
+		btSolverBody& solverBody = m_tmpSolverBodyPool[i];
+        initSolverBody(&solverBody, obj, infoGlobal.m_timeStep);
+
+		btRigidBody* body = btRigidBody::upcast(obj);
+		if (body && body->getInvMass())
+		{
+			btVector3 gyroForce (0,0,0);
+			if (body->getFlags()&BT_ENABLE_GYROSCOPIC_FORCE_EXPLICIT)
+			{
+				gyroForce = body->computeGyroscopicForceExplicit(infoGlobal.m_maxGyroscopicForce);
+				solverBody.m_externalTorqueImpulse -= gyroForce*body->getInvInertiaTensorWorld()*infoGlobal.m_timeStep;
+			}
+			if (body->getFlags()&BT_ENABLE_GYROSCOPIC_FORCE_IMPLICIT_WORLD)
+			{
+				gyroForce = body->computeGyroscopicImpulseImplicit_World(infoGlobal.m_timeStep);
+				solverBody.m_externalTorqueImpulse += gyroForce;
+			}
+			if (body->getFlags()&BT_ENABLE_GYROSCOPIC_FORCE_IMPLICIT_BODY)
+			{
+				gyroForce = body->computeGyroscopicImpulseImplicit_Body(infoGlobal.m_timeStep);
+				solverBody.m_externalTorqueImpulse += gyroForce;
+			}
+		}
+	}
+}
+
+
+struct ConvertBodiesLoop : public btIParallelForBody
+{
+    btSequentialImpulseConstraintSolverMt* m_solver;
+    btCollisionObject** m_bodies;
+    int m_numBodies;
+    const btContactSolverInfo& m_infoGlobal;
+
+    ConvertBodiesLoop( btSequentialImpulseConstraintSolverMt* solver,
+        btCollisionObject** bodies,
+        int numBodies,
+        const btContactSolverInfo& infoGlobal
+    ) :
+        m_infoGlobal(infoGlobal)
+    {
+        m_solver = solver;
+        m_bodies = bodies;
+        m_numBodies = numBodies;
+    }
+    void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
+    {
+        m_solver->internalConvertBodies( m_bodies, iBegin, iEnd, m_infoGlobal );
+    }
+};
+
+
+void btSequentialImpulseConstraintSolverMt::convertBodies(btCollisionObject** bodies, int numBodies, const btContactSolverInfo& infoGlobal)
+{
+    BT_PROFILE("convertBodies");
+    m_kinematicBodyUniqueIdToSolverBodyTable.resize( 0 );
+
+	m_tmpSolverBodyPool.resizeNoInitialize(numBodies+1);
+
+    m_fixedBodyId = numBodies;
+    {
+        btSolverBody& fixedBody = m_tmpSolverBodyPool[ m_fixedBodyId ];
+        initSolverBody( &fixedBody, NULL, infoGlobal.m_timeStep );
+    }
+
+    bool parallelBodySetup = true;
+    if (parallelBodySetup)
+    {
+        ConvertBodiesLoop loop(this, bodies, numBodies, infoGlobal);
+        int grainSize = 40;
+        btParallelFor(0, numBodies, grainSize, loop);
+    }
+    else
+    {
+        internalConvertBodies( bodies, 0, numBodies, infoGlobal );
+    }
+}
+
+
 btScalar btSequentialImpulseConstraintSolverMt::solveGroupCacheFriendlySetup(
      btCollisionObject** bodies,
      int numBodies,
@@ -643,10 +885,6 @@ btScalar btSequentialImpulseConstraintSolverMt::solveGroupCacheFriendlySetup(
                                                                        infoGlobal,
                                                                        debugDrawer
                                                                        );
-    if ( m_useBatching )
-    {
-        setupBatchedJointConstraints();
-    }
     return 0.0f;
 }
 

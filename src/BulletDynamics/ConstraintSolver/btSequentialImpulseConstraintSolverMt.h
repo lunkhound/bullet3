@@ -56,7 +56,6 @@ subject to the following restrictions:
 ATTRIBUTE_ALIGNED16(class) btSequentialImpulseConstraintSolverMt : public btSequentialImpulseConstraintSolver
 {
 public:
-	virtual void convertContacts(btPersistentManifold** manifoldPtr, int numManifolds, const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
 	virtual void solveGroupCacheFriendlySplitImpulseIterations(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer) BT_OVERRIDE;
 	virtual btScalar solveSingleIteration(int iteration, btCollisionObject** bodies ,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer) BT_OVERRIDE;
 	virtual btScalar solveGroupCacheFriendlySetup(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer) BT_OVERRIDE;
@@ -74,6 +73,15 @@ public:
         bool contactHasRollingFriction[ MAX_NUM_CONTACT_POINTS ];
         btManifoldPoint* contactPoints[ MAX_NUM_CONTACT_POINTS ];
     };
+    // temp struct used for setting up joint constraints in parallel
+    struct JointParams
+    {
+        int m_solverConstraint;
+        int m_solverBodyA;
+        int m_solverBodyB;
+    };
+    void internalInitMultipleJoints(btTypedConstraint** constraints, int iBegin, int iEnd);
+    void internalConvertMultipleJoints( const btAlignedObjectArray<JointParams>& jointParamsArray, btTypedConstraint** constraints, int iBegin, int iEnd, const btContactSolverInfo& infoGlobal );
 
     // parameters to control batching
     static bool s_allowNestedParallelForLoops;        // whether to allow nested parallel operations
@@ -107,8 +115,11 @@ protected:
     virtual btScalar resolveAllRollingFrictionConstraints();
 
     virtual void setupBatchedContactConstraints(float avgConnectivity);
-    virtual void setupBatchedJointConstraints();
+    virtual void setupBatchedJointConstraints(float avgConnectivity);
     virtual void warmstartingWriteBackContacts(const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
+    virtual void convertJoints(btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
+	virtual void convertContacts(btPersistentManifold** manifoldPtr, int numManifolds, const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
+    virtual void convertBodies(btCollisionObject** bodies, int numBodies, const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
 
 	int getOrInitSolverBodyThreadsafe(btCollisionObject& body, btScalar timeStep);
     void allocAllContactConstraints(btPersistentManifold** manifoldPtr, int numManifolds, const btContactSolverInfo& infoGlobal);
@@ -132,6 +143,7 @@ public:
     void internalCollectContactManifoldCachedInfo(btContactManifoldCachedInfo* cachedInfoArray, btPersistentManifold** manifold, int numManifolds, const btContactSolverInfo& infoGlobal);
     void internalAllocContactConstraints(const btContactManifoldCachedInfo* cachedInfoArray, int numManifolds);
     void internalSetupContactConstraints(int iContact, const btContactSolverInfo& infoGlobal);
+    void internalConvertBodies(btCollisionObject** bodies, int iBegin, int iEnd, const btContactSolverInfo& infoGlobal);
     void internalWarmstartingWriteContactPoints(int iBegin, int iEnd);
 };
 
