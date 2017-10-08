@@ -96,7 +96,9 @@ protected:
 	void	convertContact(btPersistentManifold* manifold,const btContactSolverInfo& infoGlobal);
 
     virtual void convertJoints(btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal);
+    void convertJoint(btSolverConstraint* destConstraintRow, btTypedConstraint* srcConstraint, const btTypedConstraint::btConstraintInfo1& info1, int solverBodyIdA, int solverBodyIdB, const btContactSolverInfo& infoGlobal);
 
+    virtual void convertBodies(btCollisionObject** bodies, int numBodies, const btContactSolverInfo& infoGlobal);
 
 	btSimdScalar	resolveSplitPenetrationSIMD(btSolverBody& bodyA,btSolverBody& bodyB, const btSolverConstraint& contactConstraint)
     {
