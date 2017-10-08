@@ -758,6 +758,7 @@ void CommonRigidBodyMTBase::createDefaultParameters()
                 "Batching: Greedy",
                 "Batching: Body Lookup",
                 "Batching: Body Lookup Hybrid",
+                "Batching: Single phase",
                 "Batching: Directional"
             };
             ComboBoxParams comboParams;

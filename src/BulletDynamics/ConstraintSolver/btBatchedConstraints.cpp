@@ -2168,6 +2168,106 @@ static void setupDirectionalBatchesMt(
 }
 
 
+static void setupBatchesSinglePhase(
+    btBatchedConstraints* batchedConstraints,
+    btAlignedObjectArray<char>* scratchMemory,
+    btConstraintArray* constraints,
+    const btAlignedObjectArray<btSolverBody>& bodies,
+    int minBatchSize,
+    int maxBatchSize,
+    float avgConnectivity,
+    btBatchedConstraints::CreateBatchesWork* workArray
+    )
+{
+    BT_PROFILE("setupBatchesSinglePhase");
+    const int numPhases = 1;
+    int numConstraints = constraints->size();
+
+    int maxNumBatchesPerPhase = bodies.size();
+    int minNumBatchesPerPhase = 16;
+    int maxNumBatches = maxNumBatchesPerPhase * numPhases;
+
+    btVector3* bodyPositions = NULL;
+    bool* bodyDynamicFlags = NULL;
+    btBatchInfo* batches = NULL;
+    int* batchWork = NULL;
+    btBatchedConstraintInfo* conInfos = NULL;
+    char* constraintPhaseIds = NULL;
+    int* constraintBatchIds = NULL;
+    {
+        PreallocatedMemoryHelper<7> memHelper;
+        memHelper.addChunk( (void**) &bodyPositions, sizeof( btVector3 ) * bodies.size() );
+        memHelper.addChunk( (void**) &bodyDynamicFlags, sizeof( bool ) * bodies.size() );
+        memHelper.addChunk( (void**) &batches, sizeof( btBatchInfo )* maxNumBatches );
+        memHelper.addChunk( (void**) &batchWork, sizeof( int )* maxNumBatches );
+        memHelper.addChunk( (void**) &conInfos, sizeof( btBatchedConstraintInfo ) * numConstraints );
+        memHelper.addChunk( (void**) &constraintPhaseIds, sizeof( char ) * numConstraints );
+        memHelper.addChunk( (void**) &constraintBatchIds, sizeof( int ) * numConstraints );
+        size_t scratchSize = memHelper.getSizeToAllocate();
+        scratchMemory->resizeNoInitialize( scratchSize );
+        char* memPtr = &scratchMemory->at(0);
+        memHelper.setChunkPointers( memPtr );
+    }
+    //bodyDynamicFlags.resizeNoInitialize(bodies.size());
+
+    for (int i = 0; i < bodies.size(); ++i)
+    {
+        const btSolverBody& body = bodies[i];
+        bodyPositions[i] = body.getWorldTransform().getOrigin();
+        bodyDynamicFlags[i] = ( body.internalGetInvMass().x() > btScalar( 0 ) );
+    }
+
+    //for (int i = 0; i < numConstraints; ++i)
+    //{
+    //    constraintBatchIds[i] = -1;
+    //}
+    //for (int i = 0; i < maxNumBatches; ++i)
+    //{
+    //    btBatchInfo& batch = batches[i];
+    //    batch = btBatchInfo();
+    //}
+
+    int numConstraintsPerPhase[numPhases];
+    numConstraintsPerPhase[0] = numConstraints;
+
+    for (int iCon = 0; iCon < numConstraints; ++iCon)
+    {
+        constraintPhaseIds[iCon] = 0;
+        constraintBatchIds[iCon] = -1;
+        const btSolverConstraint& con = constraints->at(iCon);
+        btBatchedConstraintInfo& conInfo = conInfos[iCon];
+        conInfo.bodyIds[0] = con.m_solverBodyIdA;
+        conInfo.bodyIds[1] = con.m_solverBodyIdB;
+    }
+    char phaseMappingTable[numPhases];
+    phaseMappingTable[0] = 0;
+
+    CreateBatchesParams params;
+    params.constraintBatchIds = &constraintBatchIds[0];
+    params.batches = &batches[0];
+    params.bodyDynamicFlags = &bodyDynamicFlags[0];
+    params.conInfos = &conInfos[0];
+    params.constraintPhaseIds = &constraintPhaseIds[0];
+    params.phaseMappingTable = phaseMappingTable;
+    params.numBodies = bodies.size();
+    params.numConstraints = numConstraints;
+    params.numGroups = numPhases;
+    params.minNumBatchesPerPhase = minNumBatchesPerPhase;
+    params.maxNumBatchesPerPhase = maxNumBatchesPerPhase;
+    params.minBatchSize = minBatchSize;
+    params.maxBatchSize = maxBatchSize;
+    params.workArray = workArray;
+
+    createBatchesForPhase( 0, params );
+
+    // all constraints have been assigned a batchId
+    updateConstraintBatchIdsForMergesMt(constraintBatchIds, numConstraints, batches, maxNumBatches);
+
+    writeOutBatches(batchedConstraints, constraintBatchIds, numConstraints, batches, batchWork, maxNumBatchesPerPhase, numPhases);
+    btAssert(batchedConstraints->validate(constraints, bodies));
+}
+
+
 static void setupSingleBatch(
     btBatchedConstraints* bc,
     int numConstraints
@@ -2222,6 +2322,10 @@ void btBatchedConstraints::setup(
 
         case BATCHING_METHOD_BODY_LOOKUP_GREEDY_HYBRID:
             setupBodyLookupGreedyHybridMt( this, constraints, bodies, minBatchSize, maxBatchSize, workArray );
+            break;
+
+        case BATCHING_METHOD_SINGLE_PHASE:
+            setupBatchesSinglePhase( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, avgConnectivity, workArray);
             break;
 
         case BATCHING_METHOD_DIRECTIONAL:
