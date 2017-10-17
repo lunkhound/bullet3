@@ -209,42 +209,83 @@ static void initBatchedBodyDynamicFlags(btAlignedObjectArray<bool>* outBodyDynam
 }
 
 
+static int runLengthEncodeConstraintInfo(btBatchedConstraintInfo* outConInfos, int numConstraints)
+{
+    BT_PROFILE("runLengthEncodeConstraintInfo");
+    // detect and run-length encode constraint rows that repeat the same bodies
+    int iDest = 0;
+    int iSrc = 0;
+    while (iSrc < numConstraints)
+    {
+        const btBatchedConstraintInfo& srcConInfo = outConInfos[iSrc];
+        btBatchedConstraintInfo& conInfo = outConInfos[iDest];
+        conInfo.constraintIndex = iSrc;
+        conInfo.bodyIds[0] = srcConInfo.bodyIds[0];
+        conInfo.bodyIds[1] = srcConInfo.bodyIds[1];
+        while (iSrc < numConstraints && outConInfos[iSrc].bodyIds[0] == srcConInfo.bodyIds[0] && outConInfos[iSrc].bodyIds[1] == srcConInfo.bodyIds[1])
+        {
+            ++iSrc;
+        }
+        conInfo.numConstraintRows = iSrc - conInfo.constraintIndex;
+        btAssert( conInfo.numConstraintRows <= 6 );
+        ++iDest;
+    }
+    return iDest;
+}
+
+
+struct ReadSolverConstraintsLoop : public btIParallelForBody
+{
+    btBatchedConstraintInfo* m_outConInfos;
+    btConstraintArray* m_constraints;
+
+    ReadSolverConstraintsLoop( btBatchedConstraintInfo* outConInfos, btConstraintArray* constraints )
+    {
+        m_outConInfos = outConInfos;
+        m_constraints = constraints;
+    }
+    void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
+    {
+        for (int i = iBegin; i < iEnd; ++i)
+        {
+            btBatchedConstraintInfo& conInfo = m_outConInfos[i];
+            const btSolverConstraint& con = m_constraints->at( i );
+            conInfo.bodyIds[0] = con.m_solverBodyIdA;
+            conInfo.bodyIds[1] = con.m_solverBodyIdB;
+            conInfo.constraintIndex = i;
+            conInfo.numConstraintRows = 1;
+        }
+    }
+};
+
+
 static int initBatchedConstraintInfo(btBatchedConstraintInfo* outConInfos, btConstraintArray* constraints)
 {
     BT_PROFILE("initBatchedConstraintInfo");
     int numConstraints = constraints->size();
-
-    for (int i = 0; i < numConstraints; ++i)
+    bool inParallel = true;
+    if (inParallel)
     {
-        btBatchedConstraintInfo& conInfo = outConInfos[i];
-        const btSolverConstraint& con = constraints->at( i );
-        conInfo.bodyIds[0] = con.m_solverBodyIdA;
-        conInfo.bodyIds[1] = con.m_solverBodyIdB;
-        conInfo.constraintIndex = i;
-        conInfo.numConstraintRows = 1;
+        ReadSolverConstraintsLoop loop(outConInfos, constraints);
+        int grainSize = 1200;
+        btParallelFor(0, numConstraints, grainSize, loop);
+    }
+    else
+    {
+        for (int i = 0; i < numConstraints; ++i)
+        {
+            btBatchedConstraintInfo& conInfo = outConInfos[i];
+            const btSolverConstraint& con = constraints->at( i );
+            conInfo.bodyIds[0] = con.m_solverBodyIdA;
+            conInfo.bodyIds[1] = con.m_solverBodyIdB;
+            conInfo.constraintIndex = i;
+            conInfo.numConstraintRows = 1;
+        }
     }
     bool useRunLengthEncoding = true;
     if (useRunLengthEncoding)
     {
-        // detect and run-length encode constraint rows that repeat the same bodies
-        int iDest = 0;
-        int iSrc = 0;
-        while (iSrc < numConstraints)
-        {
-            const btBatchedConstraintInfo& srcConInfo = outConInfos[iSrc];
-            btBatchedConstraintInfo& conInfo = outConInfos[iDest];
-            conInfo.constraintIndex = iSrc;
-            conInfo.bodyIds[0] = srcConInfo.bodyIds[0];
-            conInfo.bodyIds[1] = srcConInfo.bodyIds[1];
-            while (iSrc < numConstraints && outConInfos[iSrc].bodyIds[0] == srcConInfo.bodyIds[0] && outConInfos[iSrc].bodyIds[1] == srcConInfo.bodyIds[1])
-            {
-                ++iSrc;
-            }
-            conInfo.numConstraintRows = iSrc - conInfo.constraintIndex;
-            btAssert( conInfo.numConstraintRows <= 6 );
-            ++iDest;
-        }
-        return iDest;
+        numConstraints = runLengthEncodeConstraintInfo(outConInfos, numConstraints);
     }
     return numConstraints;
 }
@@ -269,6 +310,54 @@ static void expandConstraintRowsInPlace(int* constraintBatchIds, const btBatched
             }
         }
     }
+}
+
+
+static void expandConstraintRows(int* destConstraintBatchIds, const int* srcConstraintBatchIds, const btBatchedConstraintInfo* conInfos, int numConstraints, int numConstraintRows)
+{
+    BT_PROFILE("expandConstraintRows");
+    for ( int iCon = 0; iCon < numConstraints; ++iCon )
+    {
+        const btBatchedConstraintInfo& conInfo = conInfos[ iCon ];
+        int iBatch = srcConstraintBatchIds[ iCon ];
+        for ( int i = 0; i < conInfo.numConstraintRows; ++i )
+        {
+            int iDest = conInfo.constraintIndex + i;
+            btAssert( iDest >= iCon );
+            btAssert( iDest >= 0 && iDest < numConstraintRows );
+            destConstraintBatchIds[ iDest ] = iBatch;
+        }
+    }
+}
+
+
+struct ExpandConstraintRowsLoop : public btIParallelForBody
+{
+    int* m_destConstraintBatchIds;
+    const int* m_srcConstraintBatchIds;
+    const btBatchedConstraintInfo* m_conInfos;
+    int m_numConstraintRows;
+
+    ExpandConstraintRowsLoop( int* destConstraintBatchIds, const int* srcConstraintBatchIds, const btBatchedConstraintInfo* conInfos, int numConstraintRows)
+    {
+        m_destConstraintBatchIds = destConstraintBatchIds;
+        m_srcConstraintBatchIds = srcConstraintBatchIds;
+        m_conInfos = conInfos;
+        m_numConstraintRows = numConstraintRows;
+    }
+    void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
+    {
+        expandConstraintRows(m_destConstraintBatchIds, m_srcConstraintBatchIds + iBegin, m_conInfos + iBegin, iEnd - iBegin, m_numConstraintRows);
+    }
+};
+
+
+static void expandConstraintRowsMt(int* destConstraintBatchIds, const int* srcConstraintBatchIds, const btBatchedConstraintInfo* conInfos, int numConstraints, int numConstraintRows)
+{
+    BT_PROFILE("expandConstraintRowsMt");
+    ExpandConstraintRowsLoop loop(destConstraintBatchIds, srcConstraintBatchIds, conInfos, numConstraintRows);
+    int grainSize = 600;
+    btParallelFor(0, numConstraints, grainSize, loop);
 }
 
 
@@ -2082,6 +2171,15 @@ public:
 //    for every phase. We could end up with a phase that has all its constraints in a
 //    single batch. This issue has come up in testing.
 //
+//    [update] Fixed that issue by taking greater care how phases are combined. We consider
+//    the direction vectors of the phases and only allow merging if the directions are
+//    relatively close. Additionally, we adjust how strict to be about the directions based
+//    on the "average connectivity" (measured as number of constraints divided by number of
+//    bodies). For a densely connected set of bodies, we limit the merging of phases to
+//    avoid combining constraints going in very different directions as that tends to
+//    lead to constraints clumping together in a giant batch. If average connectivity is low,
+//    then the giant batch problem is far less likely, so we are more liberal about merging
+//    so that we can keep the number of phases low.
 
 /*
 
@@ -2104,6 +2202,7 @@ public:
  So the rule is, if a constraint comes along that would add too much connectivity, then we
  transfer that constraint to another phase.
 
+ This has not been implemented.
 */
 static void setupDirectionalBatchesMt(
     btBatchedConstraints* batchedConstraints,
@@ -2135,8 +2234,9 @@ static void setupDirectionalBatchesMt(
     btBatchedConstraintInfo* conInfos = NULL;
     char* constraintPhaseIds = NULL;
     int* constraintBatchIds = NULL;
+    int* constraintRowBatchIds = NULL;
     {
-        PreallocatedMemoryHelper<7> memHelper;
+        PreallocatedMemoryHelper<8> memHelper;
         memHelper.addChunk( (void**) &bodyPositions, sizeof( btVector3 ) * bodies.size() );
         memHelper.addChunk( (void**) &bodyDynamicFlags, sizeof( bool ) * bodies.size() );
         memHelper.addChunk( (void**) &batches, sizeof( btBatchInfo )* maxNumBatches );
@@ -2144,6 +2244,7 @@ static void setupDirectionalBatchesMt(
         memHelper.addChunk( (void**) &conInfos, sizeof( btBatchedConstraintInfo ) * numConstraints );
         memHelper.addChunk( (void**) &constraintPhaseIds, sizeof( char ) * numConstraints );
         memHelper.addChunk( (void**) &constraintBatchIds, sizeof( int ) * numConstraints );
+        memHelper.addChunk( (void**) &constraintRowBatchIds, sizeof( int ) * numConstraints );
         size_t scratchSize = memHelper.getSizeToAllocate();
         scratchMemory->resizeNoInitialize( scratchSize );
         char* memPtr = &scratchMemory->at(0);
@@ -2243,10 +2344,14 @@ static void setupDirectionalBatchesMt(
 
     if (numConstraintRows > numConstraints)
     {
-        expandConstraintRowsInPlace(&constraintBatchIds[0], &conInfos[0], numConstraints, numConstraintRows);
+        expandConstraintRowsMt(&constraintRowBatchIds[0], &constraintBatchIds[0], &conInfos[0], numConstraints, numConstraintRows);
+    }
+    else
+    {
+        constraintRowBatchIds = constraintBatchIds;
     }
 
-    writeOutBatches(batchedConstraints, constraintBatchIds, numConstraintRows, batches, batchWork, maxNumBatchesPerPhase, numActualPhases);
+    writeOutBatches(batchedConstraints, constraintRowBatchIds, numConstraintRows, batches, batchWork, maxNumBatchesPerPhase, numActualPhases);
     btAssert(batchedConstraints->validate(constraints, bodies));
 }
 
@@ -2278,8 +2383,9 @@ static void setupBatchesSinglePhase(
     btBatchedConstraintInfo* conInfos = NULL;
     char* constraintPhaseIds = NULL;
     int* constraintBatchIds = NULL;
+    int* constraintRowBatchIds = NULL;
     {
-        PreallocatedMemoryHelper<7> memHelper;
+        PreallocatedMemoryHelper<8> memHelper;
         memHelper.addChunk( (void**) &bodyPositions, sizeof( btVector3 ) * bodies.size() );
         memHelper.addChunk( (void**) &bodyDynamicFlags, sizeof( bool ) * bodies.size() );
         memHelper.addChunk( (void**) &batches, sizeof( btBatchInfo )* maxNumBatches );
@@ -2287,6 +2393,7 @@ static void setupBatchesSinglePhase(
         memHelper.addChunk( (void**) &conInfos, sizeof( btBatchedConstraintInfo ) * numConstraints );
         memHelper.addChunk( (void**) &constraintPhaseIds, sizeof( char ) * numConstraints );
         memHelper.addChunk( (void**) &constraintBatchIds, sizeof( int ) * numConstraints );
+        memHelper.addChunk( (void**) &constraintRowBatchIds, sizeof( int ) * numConstraints );
         size_t scratchSize = memHelper.getSizeToAllocate();
         scratchMemory->resizeNoInitialize( scratchSize );
         char* memPtr = &scratchMemory->at(0);
@@ -2333,10 +2440,14 @@ static void setupBatchesSinglePhase(
 
     if (numConstraintRows > numConstraints)
     {
-        expandConstraintRowsInPlace(&constraintBatchIds[0], &conInfos[0], numConstraints, numConstraintRows);
+        expandConstraintRowsMt(&constraintRowBatchIds[0], &constraintBatchIds[0], &conInfos[0], numConstraints, numConstraintRows);
+    }
+    else
+    {
+        constraintRowBatchIds = constraintBatchIds;
     }
 
-    writeOutBatches(batchedConstraints, constraintBatchIds, numConstraintRows, batches, batchWork, maxNumBatchesPerPhase, numPhases);
+    writeOutBatches(batchedConstraints, constraintRowBatchIds, numConstraintRows, batches, batchWork, maxNumBatchesPerPhase, numPhases);
     btAssert(batchedConstraints->validate(constraints, bodies));
 }
 
