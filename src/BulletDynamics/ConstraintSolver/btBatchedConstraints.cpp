@@ -392,9 +392,6 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
     bodyBatchIds.resize( 0 );
     bodyBatchIds.resize( numBodies, kUnassignedBatch );
 
-    btAlignedObjectArray<bool> bodyConnectivityFlags;
-    bodyConnectivityFlags.resize( numBodies, false );
-
     // for each unassigned constraint,
     for ( int iiCon = curConstraints.size() - 1; iiCon >= 0; --iiCon )
     {
@@ -403,12 +400,10 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         btAssert( constraintBatchIds[iCon] == kUnassignedBatch );
         int batchIds[ 2 ] = { kUnassignedBatch, kUnassignedBatch };
         bool isDynamic[ 2 ];
-        bool isConnected[ 2 ];
         for ( int iiBody = 0; iiBody < 2; ++iiBody )
         {
             int iBody = conInfo.bodyIds[ iiBody ];
             isDynamic[ iiBody ] = bodyDynamicFlags[iBody];
-            isConnected[ iiBody ] = false; //bodyConnectivityFlags[ iBody ];
             if ( isDynamic[ iiBody ] )
             {
                 int iBatch = bodyBatchIds[iBody];
@@ -438,10 +433,7 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         else if ( batchIds[ 0 ] == kUnassignedBatch )
         {
             // one is unassigned, the other not
-            if (!isConnected[ 1 ])
-            {
-                assignBatchId = batchIds[ 1 ];
-            }
+            assignBatchId = batchIds[ 1 ];
             if ( isDynamic[ 0 ] )
             {
                 numBodiesToBeAdded = 1;
@@ -450,10 +442,7 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         else if ( batchIds[ 1 ] == kUnassignedBatch )
         {
             // one is unassigned, the other not
-            if (!isConnected[ 0 ])
-            {
-                assignBatchId = batchIds[ 0 ];
-            }
+            assignBatchId = batchIds[ 0 ];
             if ( isDynamic[ 1 ] )
             {
                 numBodiesToBeAdded = 1;
@@ -462,11 +451,7 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
         else if ( batchIds[ 0 ] == batchIds[ 1 ] )
         {
             // both bodies in same batch already
-            // if it won't make us exceed max batch size,
-            //if ( batches[ batchIds[ 0 ] ].numConstraints < maxBatchSize )
-            {
-                assignBatchId = batchIds[ 0 ];
-            }
+            assignBatchId = batchIds[ 0 ];
         }
         else if ( allowMerging )
         {
@@ -475,14 +460,9 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
             // we could either merge batches, or postpone until next phase
             int batch0Size = batches[ batchIds[ 0 ] ].numConstraints;
             int batch1Size = batches[ batchIds[ 1 ] ].numConstraints;
-            bool canMerge = true;
-            if (isConnected[0] || isConnected[1])
-            {
-                canMerge = false;
-            }
 
             btAssert( batches[ batchIds[ 0 ] ].phaseId == batches[ batchIds[ 1 ] ].phaseId );
-            if ( canMerge && batch0Size < minBatchSize && batch1Size < minBatchSize && ( batch0Size + batch1Size ) < maxBatchSize )
+            if ( batch0Size < minBatchSize && batch1Size < minBatchSize && ( batch0Size + batch1Size ) < maxBatchSize )
             {
                 // merge higher index batch into lower index batch
                 assignBatchId = btMin( batchIds[ 0 ], batchIds[ 1 ] );
@@ -512,18 +492,7 @@ static void createBatchesForPhaseGreedy(int curPhaseId,
                 if ( isDynamic[ iiBody ] )
                 {
                     int iBody = conInfo.bodyIds[ iiBody ];
-                    if (batchIds[ iiBody ] == assignBatchId)
-                    {
-                        if (numBodiesToBeAdded > 0)
-                        {
-                            // prevent this body from causing any more bodies to be added this phase
-                            //bodyConnectivityFlags[iBody] = true;
-                        }
-                    }
-                    else
-                    {
-                        bodyBatchIds[ iBody ] = assignBatchId;
-                    }
+                    bodyBatchIds[ iBody ] = assignBatchId;
                 }
             }
         }
