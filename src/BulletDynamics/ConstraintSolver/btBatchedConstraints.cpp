@@ -1304,6 +1304,19 @@ struct CreateBatchesParams
 };
 
 
+//
+// createBatchesForPhase
+//
+// Collect all of the constraints assigned to the given phase, and assemble them into
+// batches such that the batches are independently solveable (i.e. no 2 batches in the phase
+// can include constraints touching a common dynamic body).
+// Constraints between pairs of dynamic bodies are dealt with first, then later we deal
+// constraints that only involve a single dynamic body, because they potentially give us some
+// flexibility in determining batch sizes (if the dynamic body involved is not already assigned
+// to a batch).
+// After the initial batches are assigned, we merge small batches together in an attempt
+// to keep the batch sizes within the given range [minBatchSize, maxBatchSize].
+//
 static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
 {
     BT_PROFILE("createBatchesForPhase");
@@ -2130,6 +2143,9 @@ public:
 //    For each axis, we pre-allocate 2 phases. Once we map a constraint to one of
 //    the 13 axes, we assign it to one of the 2 phases in a way that leads to an
 //    even distribution of constraints.
+//
+//    [Update: Initially we allocated 2 phases per axis, but testing showed better
+//    results with just 1 phase per axis due to the advantage of fewer phases.]
 //
 //    Once all of the constraints are assigned to phases, we even out the size of
 //    phases by merging together the 2 smallest phases in the group until the smallest
