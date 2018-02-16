@@ -114,8 +114,8 @@ protected:
     virtual btScalar resolveAllContactConstraintsInterleaved();
     virtual btScalar resolveAllRollingFrictionConstraints();
 
-    virtual void setupBatchedContactConstraints(float avgConnectivity);
-    virtual void setupBatchedJointConstraints(float avgConnectivity);
+    virtual void setupBatchedContactConstraints();
+    virtual void setupBatchedJointConstraints();
     virtual void warmstartingWriteBackContacts(const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
     virtual void convertJoints(btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal) BT_OVERRIDE;
 	virtual void convertContacts(btPersistentManifold** manifoldPtr, int numManifolds, const btContactSolverInfo& infoGlobal) BT_OVERRIDE;

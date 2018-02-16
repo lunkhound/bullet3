@@ -1304,6 +1304,8 @@ struct CreateBatchesParams
 };
 
 
+#define USE_UNION_FIND 1
+
 //
 // createBatchesForPhase
 //
@@ -1316,6 +1318,11 @@ struct CreateBatchesParams
 // to a batch).
 // After the initial batches are assigned, we merge small batches together in an attempt
 // to keep the batch sizes within the given range [minBatchSize, maxBatchSize].
+//
+// Parallelism:
+//   Only a single thread per phase. So different phases can be done in parallel, but
+//   each phase can only be worked on by a single thread. If there is only a single phase
+//   then no parallelism is possible.
 //
 static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
 {
@@ -1346,9 +1353,12 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
 
     btAlignedObjectArray<int>& bodyBatchIds = work.m_bodyBatchIds;
 
+#if USE_UNION_FIND
     btUnionFind& unionFind = work.m_unionFind;
 
     unionFind.reset( numBodies );
+#endif // USE_UNION_FIND
+
     curConstraints.resize( 0 );
     curFlexConstraints.resize( 0 );
     btAssert(params.constraintPhaseIds);
@@ -1369,7 +1379,9 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
                     int body1 = conInfo.bodyIds[ 1 ];
                     if ( bodyDynamicFlags[ body0 ] && bodyDynamicFlags[ body1 ] )
                     {
+#if USE_UNION_FIND
                         unionFind.unite( body0, body1 );
+#endif // USE_UNION_FIND
                         curConstraints.push_back( iCon );
                     }
                     else
@@ -1395,7 +1407,9 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
         const btBatchedConstraintInfo& conInfo = conInfos[ iCon ];
         int body = conInfo.bodyIds[ 0 ];
         btAssert( bodyDynamicFlags[ body ] );
+#if USE_UNION_FIND
         int island = unionFind.find( body );
+#endif // USE_UNION_FIND
         int iBatch = bodyBatchIds[ island ];
         if ( iBatch == kUnassignedBatch )
         {
@@ -1416,7 +1430,9 @@ static void createBatchesForPhase(int iPhase, const CreateBatchesParams& params)
         int body1 = conInfo.bodyIds[ 1 ];
         int body = bodyDynamicFlags[ body0 ] ? body0 : body1;
         btAssert( bodyDynamicFlags[ body ] );
+#if USE_UNION_FIND
         int island = unionFind.find( body );
+#endif // USE_UNION_FIND
         int iBatch = bodyBatchIds[ island ];
         // if dynamic body has already been assigned a batch,
         if ( iBatch != kUnassignedBatch )
@@ -1612,15 +1628,15 @@ static void setupBodyLookupGreedyHybridMt(
     btAlignedObjectArray<btBatchInfo> batches;
     batches.resize(maxNumBatchesPerPhase * numPhases);
 
+    btAlignedObjectArray<bool> bodyDynamicFlags;
+    initBatchedBodyDynamicFlags(&bodyDynamicFlags, bodies);
+
     btAlignedObjectArray<btBatchedConstraintInfo> conInfos;
     initBatchedConstraintInfoArray(&conInfos, constraints);
     int numConstraints = conInfos.size();
     int numConstraintRows = constraints->size();
 
     mergeSmallPhases( &groupPhaseTable, &numPhases, 12, conInfos );
-
-    btAlignedObjectArray<bool> bodyDynamicFlags;
-    initBatchedBodyDynamicFlags(&bodyDynamicFlags, bodies);
 
     btAlignedObjectArray<int> constraintBatchIds;
     constraintBatchIds.reserve(numConstraintRows);
@@ -2196,7 +2212,6 @@ static void setupDirectionalBatchesMt(
     const btAlignedObjectArray<btSolverBody>& bodies,
     int minBatchSize,
     int maxBatchSize,
-    float avgConnectivity,
     btBatchedConstraints::CreateBatchesWork* workArray
     )
 {
@@ -2237,14 +2252,24 @@ static void setupDirectionalBatchesMt(
     }
     //bodyDynamicFlags.resizeNoInitialize(bodies.size());
 
+    int dynamicBodyCount = 0;
     for (int i = 0; i < bodies.size(); ++i)
     {
         const btSolverBody& body = bodies[i];
         bodyPositions[i] = body.getWorldTransform().getOrigin();
-        bodyDynamicFlags[i] = ( body.internalGetInvMass().x() > btScalar( 0 ) );
+        if ( body.internalGetInvMass().x() > btScalar( 0 ) )
+        {
+            dynamicBodyCount++;
+            bodyDynamicFlags[ i ] = true;
+        }
+        else
+        {
+            bodyDynamicFlags[ i ] = false;
+        }
     }
 
     numConstraints = initBatchedConstraintInfo(conInfos, constraints);
+    float avgConnectivity = float(dynamicBodyCount) / numConstraints;
     //for (int i = 0; i < numConstraints; ++i)
     //{
     //    constraintBatchIds[i] = -1;
@@ -2348,7 +2373,6 @@ static void setupBatchesSinglePhase(
     const btAlignedObjectArray<btSolverBody>& bodies,
     int minBatchSize,
     int maxBatchSize,
-    float avgConnectivity,
     btBatchedConstraints::CreateBatchesWork* workArray
     )
 {
@@ -2385,11 +2409,22 @@ static void setupBatchesSinglePhase(
         memHelper.setChunkPointers( memPtr );
     }
 
+    btVector3 bboxMin(BT_LARGE_FLOAT, BT_LARGE_FLOAT, BT_LARGE_FLOAT);
+    btVector3 bboxMax = -bboxMin;
+    int dynamicBodyCount = 0;
     for (int i = 0; i < bodies.size(); ++i)
     {
         const btSolverBody& body = bodies[i];
-        bodyPositions[i] = body.getWorldTransform().getOrigin();
-        bodyDynamicFlags[i] = ( body.internalGetInvMass().x() > btScalar( 0 ) );
+        btVector3 bodyPos = body.getWorldTransform().getOrigin();
+        bool isDynamic = ( body.internalGetInvMass().x() > btScalar( 0 ) );
+        bodyPositions[i] = bodyPos;
+        bodyDynamicFlags[i] = isDynamic;
+        if (isDynamic)
+        {
+            dynamicBodyCount++;
+            bboxMin.setMin(bodyPos);
+            bboxMax.setMax(bodyPos);
+        }
     }
 
     numConstraints = initBatchedConstraintInfo(conInfos, constraints);
@@ -2472,7 +2507,6 @@ void btBatchedConstraints::setup(
     BatchingMethod batchingMethod,
     int minBatchSize,
     int maxBatchSize,
-    float avgConnectivity,
     btAlignedObjectArray<char>* scratchMemory,
     CreateBatchesWork* workArray
     )
@@ -2494,11 +2528,11 @@ void btBatchedConstraints::setup(
             break;
 
         case BATCHING_METHOD_SINGLE_PHASE:
-            setupBatchesSinglePhase( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, avgConnectivity, workArray);
+            setupBatchesSinglePhase( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, workArray);
             break;
 
         case BATCHING_METHOD_DIRECTIONAL:
-            setupDirectionalBatchesMt( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, avgConnectivity, workArray );
+            setupDirectionalBatchesMt( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, workArray );
             break;
         }
         if (s_debugDrawBatches)

@@ -46,7 +46,7 @@ btSequentialImpulseConstraintSolverMt::~btSequentialImpulseConstraintSolverMt()
 }
 
 
-void btSequentialImpulseConstraintSolverMt::setupBatchedContactConstraints(float avgConnectivity)
+void btSequentialImpulseConstraintSolverMt::setupBatchedContactConstraints()
 {
     BT_PROFILE("setupBatchedContactConstraints");
     m_batchedContactConstraints.setup( &m_tmpSolverContactConstraintPool,
@@ -54,14 +54,13 @@ void btSequentialImpulseConstraintSolverMt::setupBatchedContactConstraints(float
         s_contactBatchingMethod,
         s_minBatchSize,
         s_maxBatchSize,
-        avgConnectivity,
         &m_scratchMemory,
         m_createBatchesWorkArray
     );
 }
 
 
-void btSequentialImpulseConstraintSolverMt::setupBatchedJointConstraints(float avgConnectivity)
+void btSequentialImpulseConstraintSolverMt::setupBatchedJointConstraints()
 {
     BT_PROFILE("setupBatchedJointConstraints");
     m_batchedJointConstraints.setup( &m_tmpSolverNonContactConstraintPool,
@@ -69,7 +68,6 @@ void btSequentialImpulseConstraintSolverMt::setupBatchedJointConstraints(float a
         s_jointBatchingMethod,
         s_minBatchSize,
         s_maxBatchSize,
-        avgConnectivity,
         &m_scratchMemory,
         m_createBatchesWorkArray
     );
@@ -604,8 +602,7 @@ void btSequentialImpulseConstraintSolverMt::convertContacts(btPersistentManifold
         allocAllContactConstraints( manifoldPtr, numManifolds, infoGlobal );
         if ( m_useBatching )
         {
-            float contactsPerBody = float(numManifolds)/m_tmpSolverBodyPool.size();
-            setupBatchedContactConstraints(contactsPerBody);
+            setupBatchedContactConstraints();
         }
         setupAllContactConstraints( infoGlobal );
     }
@@ -764,8 +761,7 @@ void btSequentialImpulseConstraintSolverMt::convertJoints(btTypedConstraint** co
     {
         internalConvertMultipleJoints( jointParamsArray, constraints, 0, numConstraints, infoGlobal );
     }
-    float constraintsPerBody = float( numConstraints ) / m_tmpSolverBodyPool.size();
-    setupBatchedJointConstraints( constraintsPerBody );
+    setupBatchedJointConstraints();
 }
 
 

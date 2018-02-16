@@ -69,7 +69,6 @@ struct btBatchedConstraints
         BatchingMethod batchingMethod,
         int minBatchSize,
         int maxBatchSize,
-        float avgConnectivity,
         btAlignedObjectArray<char>* scratchMemory,
         CreateBatchesWork* workArray
     );
