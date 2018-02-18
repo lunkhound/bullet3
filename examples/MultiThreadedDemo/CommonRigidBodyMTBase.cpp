@@ -759,7 +759,8 @@ void CommonRigidBodyMTBase::createDefaultParameters()
                 "Batching: Body Lookup",
                 "Batching: Body Lookup Hybrid",
                 "Batching: Single phase",
-                "Batching: Directional"
+                "Batching: Directional",
+                "Batching: Spatial Grid"
             };
             ComboBoxParams comboParams;
             comboParams.m_userPointer = sBatchingMethodComboBoxItems;
