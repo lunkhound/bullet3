@@ -690,6 +690,23 @@ static void writeOutBatchesSimple(btBatchedConstraints* bc,
 }
 
 
+static void writeOutConstraintIndices(btBatchedConstraints* bc,
+    const int* constraintBatchIds,
+    int numConstraints,
+    int* constraintIdPerBatch
+    )
+{
+    BT_PROFILE("writeOutConstraintIndices");
+    for ( int iCon = 0; iCon < numConstraints; ++iCon )
+    {
+        int iBatch = constraintBatchIds[ iCon ];
+        int iDestCon = constraintIdPerBatch[ iBatch ];
+        constraintIdPerBatch[ iBatch ] = iDestCon + 1;
+        bc->m_constraintIndices[ iDestCon ] = iCon;
+    }
+}
+
+
 static void writeOutBatches(btBatchedConstraints* bc,
     const int* constraintBatchIds,
     int numConstraints,
@@ -709,10 +726,9 @@ static void writeOutBatches(btBatchedConstraints* bc,
     {
         int* constraintIdPerBatch = batchWork;  // for each batch, keep an index into the next available slot in the m_constraintIndices array
         int iConstraint = 0;
-        int curPhaseBegin = 0;
-        int curPhaseId = 0;
         for (int iPhase = 0; iPhase < numPhases; ++iPhase)
         {
+            int curPhaseBegin = bc->m_batches.size();
             int iBegin = iPhase * maxNumBatchesPerPhase;
             int iEnd = iBegin + maxNumBatchesPerPhase;
             for ( int i = iBegin; i < iEnd; ++i )
@@ -724,38 +740,20 @@ static void writeOutBatches(btBatchedConstraints* bc,
                 iConstraint += numConstraints;
                 if ( numConstraints > 0 )
                 {
-                    // if new phase is starting
-                    if ( batch.phaseId != curPhaseId )
-                    {
-                        // output the previous phase
-                        bc->m_phases.push_back( Range( curPhaseBegin, bc->m_batches.size() ) );
-                        curPhaseBegin = bc->m_batches.size();
-                        curPhaseId = batch.phaseId;
-                    }
                     bc->m_batches.push_back( Range( curBatchBegin, iConstraint ) );
                 }
             }
-        }
-        if (bc->m_batches.size() > curPhaseBegin)
-        {
-            // output last phase
-            bc->m_phases.push_back( Range( curPhaseBegin, bc->m_batches.size() ) );
+            // if any batches were emitted this phase,
+            if ( bc->m_batches.size() > curPhaseBegin )
+            {
+                // output phase
+                bc->m_phases.push_back( Range( curPhaseBegin, bc->m_batches.size() ) );
+            }
         }
 
         btAssert(iConstraint == numConstraints);
         bc->m_constraintIndices.resizeNoInitialize( numConstraints );
-        for ( int iCon = 0; iCon < numConstraints; ++iCon )
-        {
-            int iBatch = constraintBatchIds[iCon];
-            //int iMergeBatch = batches[iBatch].mergeIndex;
-            //if (iMergeBatch != kNoMerge)
-            //{
-            //    iBatch = iMergeBatch;
-            //}
-            int iDestCon = constraintIdPerBatch[iBatch];
-            constraintIdPerBatch[iBatch] = iDestCon + 1;
-            bc->m_constraintIndices[iDestCon] = iCon;
-        }
+        writeOutConstraintIndices(bc, constraintBatchIds, numConstraints, constraintIdPerBatch);
     }
     // for each phase
     for (int iPhase = 0; iPhase < bc->m_phases.size(); ++iPhase)
@@ -962,7 +960,7 @@ static void setupBodyLookupMt(
     int maxBatchSize
     )
 {
-    BT_PROFILE("setupMtSimple");
+    BT_PROFILE("setupBodyLookupMt");
     const int numGroups = 8;  // must be a power of 2
     const int groupMask = numGroups - 1;
     btAlignedObjectArray<int> groupPhaseTable;
@@ -2587,7 +2585,7 @@ static void assignConstraintsToGridBatches(const AssignConstraintsToGridBatchesP
             {
                 iBody0 = con.bodyIds[ 1 ];
             }
-            btAssert(bodyDynamicFlags[ iBody0 ]);
+            btAssert(params.bodyDynamicFlags[ iBody0 ]);
             const btIntVec3& body0Coords = params.bodyGridCoords[iBody0];
             // for each dimension x,y,z,
             for ( int i = 0; i < 3; ++i )
