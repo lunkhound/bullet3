@@ -27,10 +27,10 @@ subject to the following restrictions:
 
 bool btSequentialImpulseConstraintSolverMt::s_allowNestedParallelForLoops = false;  // some task schedulers don't like nested loops
 int btSequentialImpulseConstraintSolverMt::s_minimumContactManifoldsForBatching = 1500;
-int btSequentialImpulseConstraintSolverMt::s_minBatchSize = 80;
+int btSequentialImpulseConstraintSolverMt::s_minBatchSize = 50;
 int btSequentialImpulseConstraintSolverMt::s_maxBatchSize = 100;
-btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_contactBatchingMethod = btBatchedConstraints::BATCHING_METHOD_DIRECTIONAL;
-btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_jointBatchingMethod = btBatchedConstraints::BATCHING_METHOD_SINGLE_PHASE;
+btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_contactBatchingMethod = btBatchedConstraints::BATCHING_METHOD_SPATIAL_GRID;
+btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_jointBatchingMethod = btBatchedConstraints::BATCHING_METHOD_SPATIAL_GRID;
 
 
 btSequentialImpulseConstraintSolverMt::btSequentialImpulseConstraintSolverMt()
