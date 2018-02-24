@@ -1496,46 +1496,118 @@ btScalar btSequentialImpulseConstraintSolverMt::resolveAllRollingFrictionConstra
 }
 
 
-void btSequentialImpulseConstraintSolverMt::internalWarmstartingWriteContactPoints(int iBegin, int iEnd)
+void btSequentialImpulseConstraintSolverMt::internalWriteBackContacts( int iBegin, int iEnd, const btContactSolverInfo& infoGlobal )
 {
-    BT_PROFILE("internalWarmstartingWriteContactPoints");
-    for ( int iContact = iBegin; iContact < iEnd; ++iContact)
-    {
-        const btSolverConstraint& contactConstraint = m_tmpSolverContactConstraintPool[ iContact ];
-        btManifoldPoint* pt = (btManifoldPoint*) contactConstraint.m_originalContactPoint;
-        btAssert( pt );
-        pt->m_appliedImpulse = contactConstraint.m_appliedImpulse;
-        pt->m_appliedImpulseLateral1 = m_tmpSolverContactFrictionConstraintPool[ contactConstraint.m_frictionIndex ].m_appliedImpulse;
-        if ( m_numFrictionDirections == 2 )
-        {
-            pt->m_appliedImpulseLateral2 = m_tmpSolverContactFrictionConstraintPool[ contactConstraint.m_frictionIndex + 1 ].m_appliedImpulse;
-        }
-    }
+    BT_PROFILE("internalWriteBackContacts");
+    writeBackContacts(iBegin, iEnd, infoGlobal);
+    //for ( int iContact = iBegin; iContact < iEnd; ++iContact)
+    //{
+    //    const btSolverConstraint& contactConstraint = m_tmpSolverContactConstraintPool[ iContact ];
+    //    btManifoldPoint* pt = (btManifoldPoint*) contactConstraint.m_originalContactPoint;
+    //    btAssert( pt );
+    //    pt->m_appliedImpulse = contactConstraint.m_appliedImpulse;
+    //    pt->m_appliedImpulseLateral1 = m_tmpSolverContactFrictionConstraintPool[ contactConstraint.m_frictionIndex ].m_appliedImpulse;
+    //    if ( m_numFrictionDirections == 2 )
+    //    {
+    //        pt->m_appliedImpulseLateral2 = m_tmpSolverContactFrictionConstraintPool[ contactConstraint.m_frictionIndex + 1 ].m_appliedImpulse;
+    //    }
+    //}
 }
 
 
-struct WarmstartingWriteContactPointsLoop : public btIParallelForBody
+void btSequentialImpulseConstraintSolverMt::internalWriteBackJoints( int iBegin, int iEnd, const btContactSolverInfo& infoGlobal )
+{
+	BT_PROFILE("internalWriteBackJoints");
+    writeBackJoints(iBegin, iEnd, infoGlobal);
+}
+
+
+void btSequentialImpulseConstraintSolverMt::internalWriteBackBodies( int iBegin, int iEnd, const btContactSolverInfo& infoGlobal )
+{
+	BT_PROFILE("internalWriteBackBodies");
+    writeBackBodies( iBegin, iEnd, infoGlobal );
+}
+
+
+struct WriteContactPointsLoop : public btIParallelForBody
 {
     btSequentialImpulseConstraintSolverMt* m_solver;
+    const btContactSolverInfo* m_infoGlobal;
 
-    WarmstartingWriteContactPointsLoop( btSequentialImpulseConstraintSolverMt* solver )
+    WriteContactPointsLoop( btSequentialImpulseConstraintSolverMt* solver, const btContactSolverInfo& infoGlobal )
     {
         m_solver = solver;
+        m_infoGlobal = &infoGlobal;
     }
     void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
     {
-        m_solver->internalWarmstartingWriteContactPoints( iBegin, iEnd );
+        m_solver->internalWriteBackContacts( iBegin, iEnd, *m_infoGlobal );
     }
 };
 
 
-void btSequentialImpulseConstraintSolverMt::warmstartingWriteBackContacts(const btContactSolverInfo& infoGlobal)
+struct WriteJointsLoop : public btIParallelForBody
 {
-	BT_PROFILE("warmstartingWriteBackContacts");
-	int numPoolConstraints = m_tmpSolverContactConstraintPool.size();
-    WarmstartingWriteContactPointsLoop loop( this );
-    int grainSize = 500;
-    btParallelFor( 0, numPoolConstraints, grainSize, loop );
-}
+    btSequentialImpulseConstraintSolverMt* m_solver;
+    const btContactSolverInfo* m_infoGlobal;
 
+    WriteJointsLoop( btSequentialImpulseConstraintSolverMt* solver, const btContactSolverInfo& infoGlobal )
+    {
+        m_solver = solver;
+        m_infoGlobal = &infoGlobal;
+    }
+    void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
+    {
+        m_solver->internalWriteBackJoints( iBegin, iEnd, *m_infoGlobal );
+    }
+};
+
+
+struct WriteBodiesLoop : public btIParallelForBody
+{
+    btSequentialImpulseConstraintSolverMt* m_solver;
+    const btContactSolverInfo* m_infoGlobal;
+
+    WriteBodiesLoop( btSequentialImpulseConstraintSolverMt* solver, const btContactSolverInfo& infoGlobal )
+    {
+        m_solver = solver;
+        m_infoGlobal = &infoGlobal;
+    }
+    void forLoop( int iBegin, int iEnd ) const BT_OVERRIDE
+    {
+        m_solver->internalWriteBackBodies( iBegin, iEnd, *m_infoGlobal );
+    }
+};
+
+
+btScalar btSequentialImpulseConstraintSolverMt::solveGroupCacheFriendlyFinish(btCollisionObject** bodies, int numBodies, const btContactSolverInfo& infoGlobal)
+{
+	BT_PROFILE("solveGroupCacheFriendlyFinish");
+
+	if (infoGlobal.m_solverMode & SOLVER_USE_WARMSTARTING)
+    {
+        WriteContactPointsLoop loop( this, infoGlobal );
+        int grainSize = 500;
+        btParallelFor( 0, m_tmpSolverContactConstraintPool.size(), grainSize, loop );
+    }
+
+    {
+        WriteJointsLoop loop( this, infoGlobal );
+        int grainSize = 400;
+        btParallelFor( 0, m_tmpSolverNonContactConstraintPool.size(), grainSize, loop );
+    }
+    {
+        WriteBodiesLoop loop( this, infoGlobal );
+        int grainSize = 100;
+        btParallelFor( 0, m_tmpSolverBodyPool.size(), grainSize, loop );
+    }
+
+	m_tmpSolverContactConstraintPool.resizeNoInitialize(0);
+	m_tmpSolverNonContactConstraintPool.resizeNoInitialize(0);
+	m_tmpSolverContactFrictionConstraintPool.resizeNoInitialize(0);
+	m_tmpSolverContactRollingFrictionConstraintPool.resizeNoInitialize(0);
+
+	m_tmpSolverBodyPool.resizeNoInitialize(0);
+	return 0.f;
+}
 
