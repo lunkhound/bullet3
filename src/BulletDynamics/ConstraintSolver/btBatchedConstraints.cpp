@@ -168,27 +168,12 @@ static void debugDrawAllBatches( const btBatchedConstraints* bc,
         btVector3 bboxExtent = bboxMax - bboxMin;
         btVector3 offsetBase = btVector3( 0, bboxExtent.y()*1.1f, 0 );
         btVector3 offsetStep = btVector3( 0, 0, bboxExtent.z()*1.1f );
-        btVector3 colorTable[] =
-        {
-            btVector3(1,0,0),  // R
-            btVector3(0,1,0),  // G
-            btVector3(0,0,1),  // B
-            btVector3(0,1,1),  // C
-            btVector3(1,0,1),  // M
-            btVector3(1,1,0),  // Y
-            btVector3(0,1,0.7),  // bluish green
-            btVector3(1,0,0.7),  // pink
-            btVector3(1,0.7,0),  // orange
-            btVector3(0,0.7,1),  // greenish blue
-            btVector3(0.7,0,1),  // purple
-            btVector3(0.7,1,0),  // yellowish green
-        };
-        int numColors = sizeof(colorTable)/sizeof(colorTable[0]);
         int numPhases = bc->m_phases.size();
         for (int iPhase = 0; iPhase < numPhases; ++iPhase)
         {
-            btVector3 color0 = colorTable[ iPhase % numColors ];
-            btVector3 color1 = color0 * 0.5;
+            float b = float(iPhase)/float(numPhases-1);
+            btVector3 color0 = btVector3(1,0,b);
+            btVector3 color1 = btVector3(0,1,b);
             btVector3 offset = offsetBase + offsetStep*(float(iPhase) - float(numPhases-1)*0.5);
             debugDrawPhase(bc, constraints, bodies, iPhase, color0, color1, offset);
         }
