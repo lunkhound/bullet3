@@ -1878,10 +1878,9 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyIterations(
 	return 0.f;
 }
 
-void btSequentialImpulseConstraintSolver::warmstartingWriteBackContacts(const btContactSolverInfo& infoGlobal)
+void btSequentialImpulseConstraintSolver::writeBackContacts(int iBegin, int iEnd, const btContactSolverInfo& infoGlobal)
 {
-	int numPoolConstraints = m_tmpSolverContactConstraintPool.size();
-		for (int j=0;j<numPoolConstraints;j++)
+		for (int j=iBegin; j<iEnd; j++)
 		{
 			const btSolverConstraint& solveManifold = m_tmpSolverContactConstraintPool[j];
 			btManifoldPoint* pt = (btManifoldPoint*) solveManifold.m_originalContactPoint;
@@ -1899,18 +1898,9 @@ void btSequentialImpulseConstraintSolver::warmstartingWriteBackContacts(const bt
 		}
 }
 
-
-btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCollisionObject** bodies,int numBodies,const btContactSolverInfo& infoGlobal)
+void btSequentialImpulseConstraintSolver::writeBackJoints(int iBegin, int iEnd, const btContactSolverInfo& infoGlobal)
 {
-	BT_PROFILE("solveGroupCacheFriendlyFinish");
-
-	if (infoGlobal.m_solverMode & SOLVER_USE_WARMSTARTING)
-	{
-        warmstartingWriteBackContacts(infoGlobal);
-	}
-
-	int numPoolConstraints = m_tmpSolverNonContactConstraintPool.size();
-	for (int j=0;j<numPoolConstraints;j++)
+	for (int j=iBegin; j<iEnd; j++)
 	{
 		const btSolverConstraint& solverConstr = m_tmpSolverNonContactConstraintPool[j];
 		btTypedConstraint* constr = (btTypedConstraint*)solverConstr.m_originalContactPoint;
@@ -1930,9 +1920,12 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCo
 			constr->setEnabled(false);
 		}
 	}
+}
 
 
-	for (int i=0;i<m_tmpSolverBodyPool.size();i++)
+void btSequentialImpulseConstraintSolver::writeBackBodies(int iBegin, int iEnd, const btContactSolverInfo& infoGlobal)
+{
+	for (int i=iBegin; i<iEnd; i++)
 	{
 		btRigidBody* body = m_tmpSolverBodyPool[i].m_originalBody;
 		if (body)
@@ -1956,6 +1949,19 @@ btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCo
 			m_tmpSolverBodyPool[i].m_originalBody->setCompanionId(-1);
 		}
 	}
+}
+
+btScalar btSequentialImpulseConstraintSolver::solveGroupCacheFriendlyFinish(btCollisionObject** bodies,int numBodies,const btContactSolverInfo& infoGlobal)
+{
+	BT_PROFILE("solveGroupCacheFriendlyFinish");
+
+	if (infoGlobal.m_solverMode & SOLVER_USE_WARMSTARTING)
+	{
+        writeBackContacts(0, m_tmpSolverContactConstraintPool.size(), infoGlobal);
+	}
+
+    writeBackJoints(0, m_tmpSolverNonContactConstraintPool.size(), infoGlobal);
+    writeBackBodies(0, m_tmpSolverBodyPool.size(), infoGlobal);
 
 	m_tmpSolverContactConstraintPool.resizeNoInitialize(0);
 	m_tmpSolverNonContactConstraintPool.resizeNoInitialize(0);

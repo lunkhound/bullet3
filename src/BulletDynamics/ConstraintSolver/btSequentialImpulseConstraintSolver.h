@@ -125,7 +125,9 @@ protected:
 		
 protected:
 	
-    virtual void warmstartingWriteBackContacts(const btContactSolverInfo& infoGlobal);
+    void writeBackContacts(int iBegin, int iEnd, const btContactSolverInfo& infoGlobal);
+    void writeBackJoints(int iBegin, int iEnd, const btContactSolverInfo& infoGlobal);
+    void writeBackBodies(int iBegin, int iEnd, const btContactSolverInfo& infoGlobal);
 	virtual void solveGroupCacheFriendlySplitImpulseIterations(btCollisionObject** bodies,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer);
 	virtual btScalar solveGroupCacheFriendlyFinish(btCollisionObject** bodies,int numBodies,const btContactSolverInfo& infoGlobal);
 	virtual btScalar solveSingleIteration(int iteration, btCollisionObject** bodies ,int numBodies,btPersistentManifold** manifoldPtr, int numManifolds,btTypedConstraint** constraints,int numConstraints,const btContactSolverInfo& infoGlobal,btIDebugDraw* debugDrawer);
