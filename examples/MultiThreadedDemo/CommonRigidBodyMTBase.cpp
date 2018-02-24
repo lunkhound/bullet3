@@ -753,14 +753,10 @@ void CommonRigidBodyMTBase::createDefaultParameters()
         }
         {
             // create a combo box for selecting the batching method
-            static const char* sBatchingMethodComboBoxItems[ btBatchedConstraints::BATCHING_METHOD_COUNT ] =
+            static const char* sBatchingMethodComboBoxItems[ btBatchedConstraints::BATCHING_METHOD_COUNT ];
             {
-                "Batching: Greedy",
-                "Batching: Body Lookup",
-                "Batching: Body Lookup Hybrid",
-                "Batching: Single phase",
-                "Batching: Directional",
-                "Batching: Spatial Grid"
+                sBatchingMethodComboBoxItems[ btBatchedConstraints::BATCHING_METHOD_SPATIAL_GRID_2D ] = "Batching: 2D Grid";
+                sBatchingMethodComboBoxItems[ btBatchedConstraints::BATCHING_METHOD_SPATIAL_GRID_3D ] = "Batching: 3D Grid";
             };
             ComboBoxParams comboParams;
             comboParams.m_userPointer = sBatchingMethodComboBoxItems;

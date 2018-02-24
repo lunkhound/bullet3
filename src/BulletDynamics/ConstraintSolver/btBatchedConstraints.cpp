@@ -863,7 +863,7 @@ static void setupSpatialGridBatchesMt(
     const btAlignedObjectArray<btSolverBody>& bodies,
     int minBatchSize,
     int maxBatchSize,
-    btBatchedConstraints::CreateBatchesWork* workArray
+    bool use2DGrid
 )
 {
     BT_PROFILE("setupSpatialGridBatchesMt");
@@ -938,7 +938,7 @@ static void setupSpatialGridBatchesMt(
 
     // if we can collapse an axis, it will cut our number of phases in half which could be more efficient
     int phaseMask = 7;
-    bool collapseAxis = true;
+    bool collapseAxis = use2DGrid;
     if ( collapseAxis )
     {
         // pick the smallest axis to collapse, leaving us with the greatest number of cells in our grid
@@ -1108,13 +1108,13 @@ void btBatchedConstraints::setup(
     BatchingMethod batchingMethod,
     int minBatchSize,
     int maxBatchSize,
-    btAlignedObjectArray<char>* scratchMemory,
-    CreateBatchesWork* workArray
+    btAlignedObjectArray<char>* scratchMemory
     )
 {
     if (constraints->size() >= minBatchSize*4)
     {
-        setupSpatialGridBatchesMt( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, workArray );
+        bool use2DGrid = batchingMethod == BatchingMethod::BATCHING_METHOD_SPATIAL_GRID_2D;
+        setupSpatialGridBatchesMt( this, scratchMemory, constraints, bodies, minBatchSize, maxBatchSize, use2DGrid );
         if (s_debugDrawBatches)
         {
             debugDrawAllBatches( this, constraints, bodies );

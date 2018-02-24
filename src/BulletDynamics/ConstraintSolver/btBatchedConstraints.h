@@ -18,7 +18,6 @@ subject to the following restrictions:
 
 #include "LinearMath/btThreads.h"
 #include "LinearMath/btAlignedObjectArray.h"
-#include "BulletCollision/CollisionDispatch/btUnionFind.h"
 #include "BulletDynamics/ConstraintSolver/btSolverBody.h"
 #include "BulletDynamics/ConstraintSolver/btSolverConstraint.h"
 
@@ -29,12 +28,8 @@ struct btBatchedConstraints
 {
     enum BatchingMethod
     {
-        BATCHING_METHOD_GREEDY,
-        BATCHING_METHOD_BODY_LOOKUP,
-        BATCHING_METHOD_BODY_LOOKUP_GREEDY_HYBRID,
-        BATCHING_METHOD_SINGLE_PHASE,
-        BATCHING_METHOD_DIRECTIONAL,
-        BATCHING_METHOD_SPATIAL_GRID,
+        BATCHING_METHOD_SPATIAL_GRID_2D,
+        BATCHING_METHOD_SPATIAL_GRID_3D,
         BATCHING_METHOD_COUNT
     };
     struct Range
@@ -55,23 +50,13 @@ struct btBatchedConstraints
 
     static bool s_debugDrawBatches;
 
-    struct CreateBatchesWork
-    {
-        // temp data
-        btAlignedObjectArray<int> m_curConstraints;
-        btAlignedObjectArray<int> m_curFlexConstraints;
-        btAlignedObjectArray<int> m_bodyBatchIds;
-        btUnionFind m_unionFind;
-    };
-
     btBatchedConstraints() {m_debugDrawer=NULL;}
     void setup( btConstraintArray* constraints,
         const btAlignedObjectArray<btSolverBody>& bodies,
         BatchingMethod batchingMethod,
         int minBatchSize,
         int maxBatchSize,
-        btAlignedObjectArray<char>* scratchMemory,
-        CreateBatchesWork* workArray
+        btAlignedObjectArray<char>* scratchMemory
     );
     bool validate( btConstraintArray* constraints, const btAlignedObjectArray<btSolverBody>& bodies ) const;
 };

@@ -105,7 +105,6 @@ protected:
     char m_antiFalseSharingPadding[CACHE_LINE_SIZE]; // padding to keep mutexes in separate cachelines
     btSpinMutex m_kinematicBodyUniqueIdToSolverBodyTableMutex;
     btAlignedObjectArray<char> m_scratchMemory;
-    btBatchedConstraints::CreateBatchesWork m_createBatchesWorkArray[BT_MAX_THREAD_COUNT];
 
     virtual void randomizeConstraintOrdering( int iteration, int numIterations );
     virtual btScalar resolveAllJointConstraints( int iteration );

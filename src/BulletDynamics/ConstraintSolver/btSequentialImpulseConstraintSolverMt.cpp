@@ -29,8 +29,8 @@ bool btSequentialImpulseConstraintSolverMt::s_allowNestedParallelForLoops = fals
 int btSequentialImpulseConstraintSolverMt::s_minimumContactManifoldsForBatching = 1500;
 int btSequentialImpulseConstraintSolverMt::s_minBatchSize = 50;
 int btSequentialImpulseConstraintSolverMt::s_maxBatchSize = 100;
-btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_contactBatchingMethod = btBatchedConstraints::BATCHING_METHOD_SPATIAL_GRID;
-btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_jointBatchingMethod = btBatchedConstraints::BATCHING_METHOD_SPATIAL_GRID;
+btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_contactBatchingMethod = btBatchedConstraints::BATCHING_METHOD_SPATIAL_GRID_2D;
+btBatchedConstraints::BatchingMethod btSequentialImpulseConstraintSolverMt::s_jointBatchingMethod = btBatchedConstraints::BATCHING_METHOD_SPATIAL_GRID_2D;
 
 
 btSequentialImpulseConstraintSolverMt::btSequentialImpulseConstraintSolverMt()
@@ -54,8 +54,7 @@ void btSequentialImpulseConstraintSolverMt::setupBatchedContactConstraints()
         s_contactBatchingMethod,
         s_minBatchSize,
         s_maxBatchSize,
-        &m_scratchMemory,
-        m_createBatchesWorkArray
+        &m_scratchMemory
     );
 }
 
@@ -68,8 +67,7 @@ void btSequentialImpulseConstraintSolverMt::setupBatchedJointConstraints()
         s_jointBatchingMethod,
         s_minBatchSize,
         s_maxBatchSize,
-        &m_scratchMemory,
-        m_createBatchesWorkArray
+        &m_scratchMemory
     );
 }
 
