@@ -156,6 +156,9 @@ btITaskScheduler* btGetTaskScheduler();
 // get non-threaded task scheduler (always available)
 btITaskScheduler* btGetSequentialTaskScheduler();
 
+// create a default task scheduler (Win32 or pthreads based)
+btITaskScheduler* btCreateDefaultTaskScheduler();
+
 // get OpenMP task scheduler (if available, otherwise returns null)
 btITaskScheduler* btGetOpenMPTaskScheduler();
 

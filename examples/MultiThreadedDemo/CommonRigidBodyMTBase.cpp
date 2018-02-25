@@ -36,7 +36,6 @@ class btCollisionShape;
 #include "BulletDynamics/MLCPSolvers/btSolveProjectedGaussSeidel.h"
 #include "BulletDynamics/MLCPSolvers/btDantzigSolver.h"
 #include "BulletDynamics/MLCPSolvers/btLemkeSolver.h"
-#include "../MultiThreading/btTaskScheduler.h"
 
 
 static int gNumIslands = 0;
@@ -295,7 +294,7 @@ public:
     {
         addTaskScheduler( btGetSequentialTaskScheduler() );
 #if BT_THREADSAFE
-        if ( btITaskScheduler* ts = createDefaultTaskScheduler() )
+        if ( btITaskScheduler* ts = btCreateDefaultTaskScheduler() )
         {
             m_allocatedTaskSchedulers.push_back( ts );
             addTaskScheduler( ts );

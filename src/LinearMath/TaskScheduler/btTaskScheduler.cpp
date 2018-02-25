@@ -1,5 +1,5 @@
 
-#include "LinearMath/btTransform.h"
+#include "LinearMath/btMinMax.h"
 #include "LinearMath/btAlignedObjectArray.h"
 #include "LinearMath/btThreads.h"
 #include "LinearMath/btQuickprof.h"
@@ -12,33 +12,9 @@ typedef void* ( *btThreadLocalStorageFunc )();
 
 #if BT_THREADSAFE
 
-#if defined( _WIN32 )
+#include "btThreadSupportInterface.h"
 
-#include "b3Win32ThreadSupport.h"
 
-b3ThreadSupportInterface* createThreadSupport( int numThreads, btThreadFunc threadFunc, btThreadLocalStorageFunc localStoreFunc, const char* uniqueName )
-{
-    b3Win32ThreadSupport::Win32ThreadConstructionInfo constructionInfo( uniqueName, threadFunc, localStoreFunc, numThreads );
-    //constructionInfo.m_priority = 0;  // highest priority (the default) -- can cause erratic performance when numThreads > numCores
-    //                                     we don't want worker threads to be higher priority than the main thread or the main thread could get
-    //                                     totally shut out and unable to tell the workers to stop
-    constructionInfo.m_priority = -1;  // normal priority
-    b3Win32ThreadSupport* threadSupport = new b3Win32ThreadSupport( constructionInfo );
-    return threadSupport;
-}
-
-#else // #if defined( _WIN32 )
-
-#include "b3PosixThreadSupport.h"
-
-b3ThreadSupportInterface* createThreadSupport( int numThreads, btThreadFunc threadFunc, btThreadLocalStorageFunc localStoreFunc, const char* uniqueName)
-{
-    b3PosixThreadSupport::ThreadConstructionInfo constructionInfo( uniqueName, threadFunc, localStoreFunc, numThreads );
-    b3ThreadSupportInterface* threadSupport = new b3PosixThreadSupport( constructionInfo );
-    return threadSupport;
-}
-
-#endif // #else // #if defined( _WIN32 )
 
 
 ///
@@ -176,7 +152,7 @@ struct JobContext
         m_useSpinMutex = false;
         m_coolDownTime = 1000; // 1000 microseconds
     }
-    b3CriticalSection* m_queueLock;
+    btCriticalSection* m_queueLock;
     btSpinMutex m_mutex;
     volatile bool m_workersShouldCheckQueue;
     volatile bool m_workersShouldSleep;
@@ -325,28 +301,19 @@ static void* WorkerThreadAllocFunc()
 class btTaskSchedulerDefault : public btITaskScheduler
 {
     JobContext m_jobContext;
-    b3ThreadSupportInterface* m_threadSupport;
+    btThreadSupportInterface* m_threadSupport;
     btAlignedObjectArray<char> m_jobMem;
     btAlignedObjectArray<char> m_threadLocalMem;
     btSpinMutex m_antiNestingLock;  // prevent nested parallel-for
     int m_numThreads;
     int m_numWorkerThreads;
-    int m_numWorkersStarted;
+    int m_maxNumThreads;
     int m_numJobs;
 public:
 
     btTaskSchedulerDefault() : btITaskScheduler("ThreadSupport")
     {
         m_threadSupport = NULL;
-        m_numThreads = getNumHardwareThreads();
-        // if can't detect number of cores,
-        if ( m_numThreads == 0 )
-        {
-            // take a guess
-            m_numThreads = 4;
-        }
-        m_numWorkerThreads = m_numThreads - 1;
-        m_numWorkersStarted = 0;
     }
 
     virtual ~btTaskSchedulerDefault()
@@ -356,10 +323,14 @@ public:
 
     void init()
     {
-        int maxNumWorkerThreads = BT_MAX_THREAD_COUNT - 1;
-        m_threadSupport = createThreadSupport( maxNumWorkerThreads, WorkerThreadFunc, WorkerThreadAllocFunc, "TaskScheduler" );
+        btThreadSupportInterface::ConstructionInfo constructionInfo( "TaskScheduler", WorkerThreadFunc, WorkerThreadAllocFunc );
+        m_threadSupport = btThreadSupportInterface::create( constructionInfo );
+
+        m_numWorkerThreads = m_threadSupport->getNumThreads();
+        m_maxNumThreads = m_numWorkerThreads + 1;
+        m_numThreads = m_maxNumThreads;
         m_jobContext.m_queueLock = m_threadSupport->createCriticalSection();
-        for ( int i = 0; i < maxNumWorkerThreads; i++ )
+        for ( int i = 0; i < m_numWorkerThreads; i++ )
         {
             WorkerThreadLocalStorage* storage = (WorkerThreadLocalStorage*) m_threadSupport->getThreadLocalMemory( i );
             btAssert( storage );
@@ -387,7 +358,7 @@ public:
 
     virtual int getMaxNumThreads() const BT_OVERRIDE
     {
-        return BT_MAX_THREAD_COUNT;
+        return m_maxNumThreads;
     }
 
     virtual int getNumThreads() const BT_OVERRIDE
@@ -397,7 +368,7 @@ public:
 
     virtual void setNumThreads( int numThreads ) BT_OVERRIDE
     {
-        m_numThreads = btMax( btMin(numThreads, int(BT_MAX_THREAD_COUNT)), 1 );
+        m_numThreads = btMax( btMin(numThreads, int(m_maxNumThreads)), 1 );
         m_numWorkerThreads = m_numThreads - 1;
     }
 
@@ -461,11 +432,7 @@ public:
             WorkerThreadLocalStorage* storage = static_cast<WorkerThreadLocalStorage*>( m_threadSupport->getThreadLocalMemory( iWorker ) );
             if (storage->status == WorkerThreadStatus::kSleeping)
             {
-                m_threadSupport->runTask( B3_THREAD_SCHEDULE_TASK, &m_jobContext, iWorker );
-                if (m_numWorkersStarted < m_numWorkerThreads)
-                {
-                    m_numWorkersStarted++;
-                }
+                m_threadSupport->runTask( iWorker, &m_jobContext );
                 numActiveWorkers++;
             }
         }
@@ -474,16 +441,8 @@ public:
     void waitForWorkersToSleep()
     {
         BT_PROFILE( "waitForWorkersToSleep" );
-        //m_threadSupport->waitForAllTasksToComplete();
         m_jobContext.m_workersShouldSleep = true;
-        int numWorkersToWaitFor = btMin(m_numWorkersStarted, m_numWorkerThreads);
-        for ( int i = 0; i < numWorkersToWaitFor; i++ )
-        {
-            int iThread;
-            int threadStatus;
-            m_threadSupport->waitForResponse( &iThread, &threadStatus );  // wait for worker threads to finish running
-            m_numWorkersStarted--;
-        }
+        m_threadSupport->waitForAllTasks();
         for ( int i = 0; i < m_numWorkerThreads; i++ )
         {
             WorkerThreadLocalStorage* storage = static_cast<WorkerThreadLocalStorage*>( m_threadSupport->getThreadLocalMemory(i) );
@@ -642,7 +601,7 @@ public:
 
 
 
-btITaskScheduler* createDefaultTaskScheduler()
+btITaskScheduler* btCreateDefaultTaskScheduler()
 {
     btTaskSchedulerDefault* ts = new btTaskSchedulerDefault();
     ts->init();
@@ -651,7 +610,7 @@ btITaskScheduler* createDefaultTaskScheduler()
 
 #else // #if BT_THREADSAFE
 
-btITaskScheduler* createDefaultTaskScheduler()
+btITaskScheduler* btCreateDefaultTaskScheduler()
 {
     return NULL;
 }
