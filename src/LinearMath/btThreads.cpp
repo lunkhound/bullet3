@@ -477,7 +477,7 @@ btScalar btParallelSum( int iBegin, int iEnd, int grainSize, const btIParallelSu
     btAssert( !"called btParallelFor in non-threadsafe build. enable BT_THREADSAFE" );
     return body.sumLoop( iBegin, iEnd );
 
-#endif #else // #if BT_THREADSAFE
+#endif //#else // #if BT_THREADSAFE
 }
 
 

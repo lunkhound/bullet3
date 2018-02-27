@@ -486,7 +486,7 @@ void btSequentialImpulseConstraintSolverMt::internalAllocContactConstraints(cons
 
             // allocate the friction constraints
             contactConstraint.m_frictionIndex = frictionIndex;
-            for ( int i = 0; i < m_numFrictionDirections; ++i )
+            for ( int iDir = 0; iDir < m_numFrictionDirections; ++iDir )
             {
                 btSolverConstraint& frictionConstraint = m_tmpSolverContactFrictionConstraintPool[frictionIndex];
                 frictionConstraint.m_frictionIndex = contactIndex;

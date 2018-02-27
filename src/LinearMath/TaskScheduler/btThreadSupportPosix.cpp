@@ -1,7 +1,6 @@
-#ifndef _WIN32
 /*
 Bullet Continuous Collision Detection and Physics Library
-Copyright (c) 2003-2007 Erwin Coumans  http://bulletphysics.com
+Copyright (c) 2003-2018 Erwin Coumans  http://bulletphysics.com
 
 This software is provided 'as-is', without any express or implied warranty.
 In no event will the authors be held liable for any damages arising from the use of this software.
@@ -13,6 +12,9 @@ subject to the following restrictions:
 2. Altered source versions must be plainly marked as such, and must not be misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
 */
+
+
+#if BT_THREADSAFE && !defined( _WIN32 )
 
 
 #include "LinearMath/btScalar.h"
@@ -31,6 +33,7 @@ subject to the following restrictions:
 #endif //_XOPEN_SOURCE
 #include <pthread.h>
 #include <semaphore.h>
+#include <unistd.h>   //for sysconf
 
 
 ///
@@ -52,7 +55,7 @@ int btGetNumHardwareThreads()
 
 int btGetNumHardwareThreads()
 {
-    return = sysconf( _SC_NPROCESSORS_ONLN );
+    return sysconf( _SC_NPROCESSORS_ONLN );
 }
 
 #endif
@@ -90,6 +93,7 @@ public:
         unsigned long threadUsed;
     };
 private:
+    typedef unsigned long long UINT64;
 
     btAlignedObjectArray<btThreadStatus>	m_activeThreadStatus;
     // m_mainSemaphoresemaphore will signal, if and how many threads are finished with their work
@@ -103,6 +107,7 @@ private:
 public:
     btThreadSupportPosix( const ConstructionInfo& threadConstructionInfo );
     virtual	~btThreadSupportPosix();
+
 
     virtual int getNumThreads() const BT_OVERRIDE { return m_numThreads; }
 
@@ -265,7 +270,7 @@ int btThreadSupportPosix::waitForResponse()
 
 void btThreadSupportPosix::waitForAllTasks()
 {
-    while ( m_startedThreadMask )
+    while ( m_startedThreadsMask )
     {
         waitForResponse();
     }
@@ -367,4 +372,5 @@ btThreadSupportInterface* btThreadSupportInterface::create( const ConstructionIn
     return new btThreadSupportPosix( info );
 }
 
-#endif //_WIN32
+#endif // BT_THREADSAFE && !defined( _WIN32 )
+

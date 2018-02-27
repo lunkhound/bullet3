@@ -1,4 +1,3 @@
-#ifdef _WIN32
 /*
 Bullet Continuous Collision Detection and Physics Library
 Copyright (c) 2003-2018 Erwin Coumans  http://bulletphysics.com
@@ -13,6 +12,8 @@ subject to the following restrictions:
 2. Altered source versions must be plainly marked as such, and must not be misrepresented as being the original software.
 3. This notice may not be removed or altered from any source distribution.
 */
+
+#if defined( _WIN32 ) &&  BT_THREADSAFE
 
 #include "LinearMath/btScalar.h"
 #include "LinearMath/btMinMax.h"
@@ -479,5 +480,5 @@ btThreadSupportInterface* btThreadSupportInterface::create( const ConstructionIn
 
 
 
-#endif //_WIN32
+#endif //defined(_WIN32) && BT_THREADSAFE
 
